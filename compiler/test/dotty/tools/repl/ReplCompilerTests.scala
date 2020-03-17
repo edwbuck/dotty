@@ -1,9 +1,12 @@
 package dotty.tools.repl
 
-import org.junit.Assert._
+import java.util.regex.Pattern
+
+import org.junit.Assert.{assertTrue => assert, _}
 import org.junit.{Ignore, Test}
 
 class ReplCompilerTests extends ReplTest {
+  import ReplCompilerTests._
 
   private def lines() =
     storedOutput().trim.linesIterator.toList
@@ -85,33 +88,33 @@ class ReplCompilerTests extends ReplTest {
   @Ignore @Test def i3305: Unit = {
     fromInitialState { implicit s =>
       run("null.toString")
-      assertTrue(storedOutput().startsWith("java.lang.NullPointerException"))
+      assert(storedOutput().startsWith("java.lang.NullPointerException"))
     }
 
     fromInitialState { implicit s =>
       run("def foo: Int = 1 + foo; foo")
-      assertTrue(storedOutput().startsWith("def foo: Int\njava.lang.StackOverflowError"))
+      assert(storedOutput().startsWith("def foo: Int\njava.lang.StackOverflowError"))
     }
 
     fromInitialState { implicit s =>
       run("""throw new IllegalArgumentException("Hello")""")
-      assertTrue(storedOutput().startsWith("java.lang.IllegalArgumentException: Hello"))
+      assert(storedOutput().startsWith("java.lang.IllegalArgumentException: Hello"))
     }
 
     fromInitialState { implicit s =>
       run("val (x, y) = null")
-      assertTrue(storedOutput().startsWith("scala.MatchError: null"))
+      assert(storedOutput().startsWith("scala.MatchError: null"))
     }
   }
 
   @Test def i2789: Unit = fromInitialState { implicit state =>
     run("(x: Int) => println(x)")
-    assertTrue(storedOutput().startsWith("val res0: Int => Unit ="))
+    assert(storedOutput().startsWith("val res0: Int => Unit ="))
   }
 
   @Test def byNameParam: Unit = fromInitialState { implicit state =>
     run("def f(g: => Int): Int = g")
-    assertTrue(storedOutput().startsWith("def f(g: => Int): Int"))
+    assert(storedOutput().startsWith("def f(g: => Int): Int"))
   }
 
   @Test def i4051 = fromInitialState { implicit state =>
@@ -151,28 +154,46 @@ class ReplCompilerTests extends ReplTest {
         |  def (x: T) > (y: T) = compare(x, y) > 0
         |}
         |
-        |given IntOrd : Ord[Int] {
+        |given IntOrd as Ord[Int] {
         |  def compare(x: Int, y: Int) =
         |  if (x < y) -1 else if (x > y) +1 else 0
         |}
       """.stripMargin) }
     .andThen         { implicit state =>
-      assertEquals(
+      assertMultiLineEquals(
         """// defined trait Ord
           |// defined object IntOrd""".stripMargin,
         storedOutput().trim
       )
       run("IntOrd")
-      assertTrue(storedOutput().startsWith("val res0: IntOrd.type ="))
+      assert(storedOutput().startsWith("val res0: IntOrd.type ="))
     }
+
+  @Test def i7934: Unit = fromInitialState { state =>
+    implicit val ctx = state.context
+    assertFalse(ParseResult.isIncomplete("_ + 1"))  // was: assertThrows[NullPointerException]
+  }
 
   @Test def testSingletonPrint = fromInitialState { implicit state =>
     run("""val a = "hello"; val x: a.type = a""")
-    assertEquals("val a: String = hello\nval x: a.type = hello", storedOutput().trim)
+    assertMultiLineEquals("val a: String = hello\nval x: a.type = hello", storedOutput().trim)
   }
 
   @Test def i6574 = fromInitialState { implicit state =>
     run("val a: 1 | 0 = 1")
     assertEquals("val a: 1 | 0 = 1", storedOutput().trim)
   }
+}
+
+object ReplCompilerTests {
+
+  private val pattern = Pattern.compile("\\r[\\n]?|\\n");
+
+  // Ensure 'expected' and 'actual' contain the same line separator(s).
+  def assertMultiLineEquals(expected: String, actual: String): Unit = {
+    val expected0 = pattern.matcher(expected).replaceAll(System.lineSeparator)
+    val actual0 = pattern.matcher(actual).replaceAll(System.lineSeparator)
+    assertEquals(expected0, actual0)
+  }
+
 }

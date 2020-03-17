@@ -7,8 +7,8 @@ object Test {
   given Toolbox = Toolbox.make(getClass.getClassLoader)
 
   def main(args: Array[String]): Unit = run {
-    def test[T: Type](clazz: (given QuoteContext) => java.lang.Class[T]) = {
-      val lclazz = clazz.toExpr
+    def test[T: Type](clazz: QuoteContext ?=> java.lang.Class[T]) = {
+      val lclazz = Expr(clazz)
       val name = '{ ($lclazz).getCanonicalName }
       println()
       println(name.show)

@@ -189,7 +189,6 @@ object Tokens extends TokensCommon {
   /** special symbols */
   final val NEWLINE = 78;          enter(NEWLINE, "end of statement", "new line")
   final val NEWLINES = 79;         enter(NEWLINES, "end of statement", "new lines")
-  final val COLONEOL = 88;         enter(COLONEOL, ":", ": at eol")
 
   /** special keywords */
   final val USCORE = 73;           enter(USCORE, "_")
@@ -200,14 +199,17 @@ object Tokens extends TokensCommon {
   final val HASH = 82;             enter(HASH, "#")
   final val VIEWBOUND = 84;        enter(VIEWBOUND, "<%")
   final val TLARROW = 85;          enter(TLARROW, "=>>")
+  final val CTXARROW = 86;         enter(CTXARROW, "?=>")
 
-  final val QUOTE = 86;            enter(QUOTE, "'")
+  final val QUOTE = 87;            enter(QUOTE, "'")
+
+  final val COLONEOL = 88;         enter(COLONEOL, ":", ": at eol")
 
   /** XML mode */
   final val XMLSTART = 98;         enter(XMLSTART, "$XMLSTART$<") // TODO: deprecate
 
   final val alphaKeywords: TokenSet = tokenRange(IF, MACRO)
-  final val symbolicKeywords: TokenSet = tokenRange(USCORE, TLARROW)
+  final val symbolicKeywords: TokenSet = tokenRange(USCORE, CTXARROW)
   final val keywords: TokenSet = alphaKeywords | symbolicKeywords
 
   final val allTokens: TokenSet = tokenRange(minToken, maxToken)
@@ -219,8 +221,10 @@ object Tokens extends TokensCommon {
   final val atomicExprTokens: TokenSet = literalTokens | identifierTokens | BitSet(
     USCORE, NULL, THIS, SUPER, TRUE, FALSE, RETURN, QUOTEID, XMLSTART)
 
-  final val canStartExpressionTokens: TokenSet = atomicExprTokens | BitSet(
-    LBRACE, LPAREN, INDENT, QUOTE, IF, DO, WHILE, FOR, NEW, TRY, THROW)
+  final val canStartExprTokens3: TokenSet = atomicExprTokens | BitSet(
+    LBRACE, LPAREN, LBRACKET, INDENT, QUOTE, IF, WHILE, FOR, NEW, TRY, THROW)
+
+  final val canStartExprTokens2: TokenSet = canStartExprTokens3 | BitSet(DO)
 
   final val canStartTypeTokens: TokenSet = literalTokens | identifierTokens | BitSet(
     THIS, SUPER, USCORE, LPAREN, AT)
@@ -247,11 +251,13 @@ object Tokens extends TokensCommon {
   /** Is token only legal as start of statement (eof also included)? */
   final val mustStartStatTokens: TokenSet = defIntroTokens | modifierTokens | BitSet(IMPORT, EXPORT, PACKAGE)
 
-  final val canStartStatTokens: TokenSet = canStartExpressionTokens | mustStartStatTokens | BitSet(
+  final val canStartStatTokens2: TokenSet = canStartExprTokens2 | mustStartStatTokens | BitSet(
+    AT, CASE)
+  final val canStartStatTokens3: TokenSet = canStartExprTokens3 | mustStartStatTokens | BitSet(
     AT, CASE)
 
   final val canEndStatTokens: TokenSet = atomicExprTokens | BitSet(
-    TYPE, GIVEN, RPAREN, RBRACE, RBRACKET, OUTDENT)
+    TYPE, RPAREN, RBRACE, RBRACKET, OUTDENT) // TODO: remove GIVEN once old import syntax is dropped
 
   /** Tokens that stop a lookahead scan search for a `<-`, `then`, or `do`.
    *  Used for disambiguating between old and new syntax.
@@ -263,8 +269,10 @@ object Tokens extends TokensCommon {
 
   final val statCtdTokens: BitSet = BitSet(THEN, ELSE, DO, CATCH, FINALLY, YIELD, MATCH)
 
+  final val closingRegionTokens = BitSet(RBRACE, CASE) | statCtdTokens
+
   final val canStartIndentTokens: BitSet =
-    statCtdTokens | BitSet(COLONEOL, EQUALS, ARROW, LARROW, WHILE, TRY, FOR)
+    statCtdTokens | BitSet(COLONEOL, EQUALS, ARROW, LARROW, WHILE, TRY, FOR, IF)
       // `if` is excluded because it often comes after `else` which makes for awkward indentation rules  TODO: try to do without the exception
 
   /** Faced with the choice between a type and a formal parameter, the following
@@ -272,17 +280,7 @@ object Tokens extends TokensCommon {
    */
   final val startParamTokens: BitSet = modifierTokens | BitSet(VAL, VAR, AT)
 
-  /** Faced with the choice of a type `(...)` or a parameter or given type list
-   *  in `(...)`, the following tokens after the opening `(` determine it's
-   *  a parameter or given type list.
-   */
-  final val startParamOrGivenTypeTokens: BitSet = startParamTokens | BitSet(GIVEN, ERASED)
-
-  final val noIndentTemplateTokens = BitSet(EXTENDS)
-  final val noIndentAfterConditionTokens = BitSet(THEN, DO)
-  final val noIndentAfterEnumeratorTokens = BitSet(YIELD, DO)
-
   final val scala3keywords = BitSet(ENUM, ERASED, GIVEN)
 
-  final val softModifierNames = Set(nme.inline, nme.opaque)
+  final val softModifierNames = Set(nme.inline, nme.opaque, nme.open)
 }

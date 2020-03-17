@@ -12,7 +12,7 @@ Splices can be of two forms:
 * A splice `${ ... : Bind[T] }` that can be placed on names of `val`s, `var`s or `def`s
 
 ```scala
-def foo(x: Expr[Int]) given tasty.Reflect: Expr[Int] = x match {
+def foo(x: Expr[Int])(using tasty.Reflect): Expr[Int] = x match {
   case '{ val $a: Int = $x; (${Bind(`a`)}: Int) + 1 } => '{ $x + 1 } // TODO needs fix for #6328, `a` is currently not in scope while typing
 }
 ```
@@ -21,7 +21,7 @@ In the example above we have `$a` which provides a `Bind[Int]`, `$x` which provi
 Quoted patterns are transformed during typer to a call of `scala.internal.quoted.Expr.unapply` which splits the quoted code into the patterns and a reifiable quote that will be used as witnesses at runtime.
 
 ```scala
-def foo(x: Expr[Int]) given tasty.Reflect: Expr[Int] = x match {
+def foo(x: Expr[Int])(using tasty.Reflect): Expr[Int] = x match {
   case scala.internal.quoted.Expr.unapply[Tuple3[Bind[Int], Expr[Int], Expr[Int]]](Tuple3(a, x, Bind(`a`), y))('{ @patternBindHole val a: Int = patternHole[Int]; patternHole[Int] + 1 }) =>
 }
 ```
@@ -47,14 +47,14 @@ def notMatched = None
 def matched = Some(()) // aka Some(Tuple0())
 def matched[T](x: T) = Some(Tuple1(x))
 def (x: Matching) && (y: Matching) = if (x == None || y == None) None else Some(x.get ++ y.get)
-def fold[T](m: Mattching*)(given Env): Matching = m.fold(matched)(_ && _)
+def fold[T](m: Mattching*)(using Env): Matching = m.fold(matched)(_ && _)
 
 // `a =#= b` stands for `a` matches `b`
-def (scrutinee: Tree) =#= pattern: Tree)(given Env): Matching // described by cases in the tables below
+def (scrutinee: Tree) =#= pattern: Tree)(using Env): Matching // described by cases in the tables below
 
-def envWith(equiv: (Symbol, Symbol)*)(given Env): Env // Adds to the current environment the fact that s1 from the scrutinee is equivalent to s2 in the pattern
+def envWith(equiv: (Symbol, Symbol)*)(using Env): Env // Adds to the current environment the fact that s1 from the scrutinee is equivalent to s2 in the pattern
 
-def equivalent(s1: Symbol, s2: Symbol)(given Env): Env
+def equivalent(s1: Symbol, s2: Symbol)(using Env): Env
 ```
 
 The implementation of `=#=`

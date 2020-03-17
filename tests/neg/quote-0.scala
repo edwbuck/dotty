@@ -1,11 +1,12 @@
 import scala.quoted._
 
-def test(given QuoteContext) = {
+def test(using QuoteContext) = {
 
   val x: Int = 0
 
   '{
-    given QuoteContext = ???
+    val qctx: QuoteContext = ???
+    given qctx.type = qctx
 
     '{x + 1}  // error: wrong staging level
 

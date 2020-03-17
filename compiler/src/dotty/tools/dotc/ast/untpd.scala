@@ -6,9 +6,11 @@ import core._
 import Types._, Contexts._, Constants._, Names._, Flags._
 import Symbols._, StdNames._, Trees._
 import util.{Property, SourceFile, NoSource}
+import util.Spans.Span
 import language.higherKinds
 import annotation.constructorOnly
 import annotation.internal.sharable
+import Decorators._
 
 object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
@@ -111,6 +113,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   case class Export(expr: Tree, selectors: List[ImportSelector])(implicit @constructorOnly src: SourceFile) extends Tree
 
   case class ImportSelector(imported: Ident, renamed: Tree = EmptyTree, bound: Tree = EmptyTree)(implicit @constructorOnly src: SourceFile) extends Tree {
+    // TODO: Make bound a typed tree?
 
     /** It's a `given` selector */
     val isGiven: Boolean = imported.name.isEmpty
@@ -182,6 +185,8 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
     case class Opaque()(implicit @constructorOnly src: SourceFile) extends Mod(Flags.Opaque)
 
+    case class Open()(implicit @constructorOnly src: SourceFile) extends Mod(Flags.Open)
+
     case class Override()(implicit @constructorOnly src: SourceFile) extends Mod(Flags.Override)
 
     case class Abstract()(implicit @constructorOnly src: SourceFile) extends Mod(Flags.Abstract)
@@ -230,6 +235,25 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
       if (mods.exists(_ eq mod)) this
       else withMods(mods :+ mod)
 
+    private def compatible(flags1: FlagSet, flags2: FlagSet): Boolean =
+      flags1.isEmpty || flags2.isEmpty
+      || flags1.isTermFlags && flags2.isTermFlags
+      || flags1.isTypeFlags && flags2.isTypeFlags
+
+    /** Add `flags` to thos modifier set, checking that there are no type/term conflicts.
+     *  If there are conflicts, issue an error and return the modifiers consisting of
+     *  the added flags only. The reason to do it this way is that the added flags usually
+     *  describe the core of a construct whereas the existing set are the modifiers
+     *  given in the source.
+     */
+    def withAddedFlags(flags: FlagSet, span: Span)(using ctx: Context): Modifiers =
+      if this.flags.isAllOf(flags) then this
+      else if compatible(this.flags, flags) then this | flags
+      else
+        val what = if flags.isTermFlags then "values" else "types"
+        ctx.error(em"${(flags & ModifierFlags).flagsString} $what cannot be ${this.flags.flagsString}", ctx.source.atSpan(span))
+        Modifiers(flags)
+
     /** Modifiers with given list of Mods. It is checked that
      *  all modifiers are already accounted for in `flags` and `privateWithin`.
      */
@@ -276,7 +300,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
    */
   abstract class DerivedTypeTree(implicit @constructorOnly src: SourceFile) extends TypeTree {
 
-    private[this] var myWatched: Tree = EmptyTree
+    private var myWatched: Tree = EmptyTree
 
     /** The watched tree; used only for printing */
     def watched: Tree = myWatched
@@ -352,7 +376,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def LambdaTypeTree(tparams: List[TypeDef], body: Tree)(implicit src: SourceFile): LambdaTypeTree = new LambdaTypeTree(tparams, body)
   def MatchTypeTree(bound: Tree, selector: Tree, cases: List[CaseDef])(implicit src: SourceFile): MatchTypeTree = new MatchTypeTree(bound, selector, cases)
   def ByNameTypeTree(result: Tree)(implicit src: SourceFile): ByNameTypeTree = new ByNameTypeTree(result)
-  def TypeBoundsTree(lo: Tree, hi: Tree)(implicit src: SourceFile): TypeBoundsTree = new TypeBoundsTree(lo, hi)
+  def TypeBoundsTree(lo: Tree, hi: Tree, alias: Tree = EmptyTree)(implicit src: SourceFile): TypeBoundsTree = new TypeBoundsTree(lo, hi, alias)
   def Bind(name: Name, body: Tree)(implicit src: SourceFile): Bind = new Bind(name, body)
   def Alternative(trees: List[Tree])(implicit src: SourceFile): Alternative = new Alternative(trees)
   def UnApply(fun: Tree, implicits: List[Tree], patterns: List[Tree])(implicit src: SourceFile): UnApply = new UnApply(fun, implicits, patterns)
@@ -421,6 +445,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
   def rootDot(name: Name)(implicit src: SourceFile): Select = Select(Ident(nme.ROOTPKG), name)
   def scalaDot(name: Name)(implicit src: SourceFile): Select = Select(rootDot(nme.scala_), name)
+  def scalaAnnotationDot(name: Name)(using SourceFile): Select = Select(scalaDot(nme.annotation), name)
   def scalaUnit(implicit src: SourceFile): Select = scalaDot(tpnme.Unit)
   def scalaAny(implicit src: SourceFile): Select = scalaDot(tpnme.Any)
   def javaDotLangDot(name: Name)(implicit src: SourceFile): Select = Select(Select(Ident(nme.java), nme.lang), name)
@@ -447,7 +472,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def makeAndType(left: Tree, right: Tree)(implicit ctx: Context): AppliedTypeTree =
     AppliedTypeTree(ref(defn.andType.typeRef), left :: right :: Nil)
 
-  def makeParameter(pname: TermName, tpe: Tree, mods: Modifiers = EmptyModifiers, isBackquoted: Boolean = false)(implicit ctx: Context): ValDef = {
+  def makeParameter(pname: TermName, tpe: Tree, mods: Modifiers, isBackquoted: Boolean = false)(implicit ctx: Context): ValDef = {
     val vdef = ValDef(pname, tpe, EmptyTree)
     if (isBackquoted) vdef.pushAttachment(Backquoted, ())
     vdef.withMods(mods | Param)
@@ -722,5 +747,13 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   /** Fold `f` over all tree nodes, in depth-first, prefix order */
   class UntypedDeepFolder[X](f: (X, Tree) => X) extends UntypedTreeAccumulator[X] {
     def apply(x: X, tree: Tree)(implicit ctx: Context): X = foldOver(f(x, tree), tree)
+  }
+
+  /** Is there a subtree of this tree that satisfies predicate `p`? */
+  def (tree: Tree) existsSubTree(p: Tree => Boolean)(implicit ctx: Context): Boolean = {
+    val acc = new UntypedTreeAccumulator[Boolean] {
+      def apply(x: Boolean, t: Tree)(implicit ctx: Context) = x || p(t) || foldOver(x, t)
+    }
+    acc(false, tree)
   }
 }

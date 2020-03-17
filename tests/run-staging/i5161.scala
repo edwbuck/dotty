@@ -10,8 +10,8 @@ object Test {
   }
   import Exp._
 
-  def evalTest(e: Exp)(given QuoteContext): Expr[Option[Int]] = e match {
-    case Int2(x) => '{ Some(${x.toExpr}) }
+  def evalTest(e: Exp)(using QuoteContext): Expr[Option[Int]] = e match {
+    case Int2(x) => '{ Some(${Expr(x)}) }
     case Add(e1, e2) =>
      '{
         (${evalTest(e1)}, ${evalTest(e2)}) match {
@@ -25,7 +25,7 @@ object Test {
 
   def main(args: Array[String]): Unit = {
     val test = Add(Int2(1), Int2(1))
-    def res(given QuoteContext) = evalTest(test)
+    def res(using QuoteContext) = evalTest(test)
     println("run : " + run(res))
     println("show : " + withQuoteContext(res.show))
   }

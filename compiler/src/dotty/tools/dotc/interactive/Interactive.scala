@@ -67,7 +67,7 @@ object Interactive {
 
   /** Does this tree define a symbol ? */
   def isDefinition(tree: Tree): Boolean =
-    tree.isInstanceOf[DefTree with NameTree]
+    tree.isInstanceOf[NamedDefTree]
 
   /** The type of the closest enclosing tree with a type containing position `pos`. */
   def enclosingType(trees: List[SourceTree], pos: SourcePosition)(implicit ctx: Context): Type = {
@@ -185,6 +185,7 @@ object Interactive {
         private def handle(utree: untpd.NameTree): Unit = {
           val tree = utree.asInstanceOf[tpd.NameTree]
           if (tree.symbol.exists
+               && tree.name != StdNames.nme.ERROR
                && !tree.symbol.is(Synthetic)
                && !tree.symbol.isPrimaryConstructor
                && tree.span.exists
@@ -378,8 +379,8 @@ object Interactive {
    */
   def localize(symbol: Symbol, sourceDriver: InteractiveDriver, targetDriver: InteractiveDriver): Symbol = {
 
-    def in[T](driver: InteractiveDriver)(fn: ImplicitFunction1[Context, T]): T =
-      fn(given driver.currentCtx)
+    def in[T](driver: InteractiveDriver)(fn: Context ?=> T): T =
+      fn(using driver.currentCtx)
 
     if (sourceDriver == targetDriver) symbol
     else {

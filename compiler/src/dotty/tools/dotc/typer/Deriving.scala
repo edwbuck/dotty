@@ -63,7 +63,7 @@ trait Deriving {
      *  (1) It must be a class type with a stable prefix (@see checkClassTypeWithStablePrefix)
      *
      *  (2) It must belong to one of the following three categories:
-     *      (a) a single paramter type class with a parameter which matches the kind of
+     *      (a) a single parameter type class with a parameter which matches the kind of
      *          the deriving ADT
      *      (b) a single parameter type class with a parameter of kind * and an ADT with
      *          one or more type parameter of kind *
@@ -122,11 +122,11 @@ trait Deriving {
         //
         //     ADT: C[A, B]               (A, B have same kinds at T, U)
         //
-        //          given derived$TC      : TC[              C         ]  // a "natural" instance
+        //          given derived$TC      as TC[              C         ]  // a "natural" instance
         //
         //     ADT: C[A]                  (A has same kind as U)
         //
-        //          given derived$TC      : TC[[t, u] =>>    C[      u]]
+        //          given derived$TC      as TC[[t, u] =>>    C[      u]]
         //
         // (b) The type class and all ADT type parameters are of kind *
         //

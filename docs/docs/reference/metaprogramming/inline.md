@@ -33,8 +33,8 @@ object Logger {
 The `Config` object contains a definition of the **inline value** `logging`.
 This means that `logging` is treated as a _constant value_, equivalent to its
 right-hand side `false`. The right-hand side of such an `inline val` must itself
-be a [constant expression](https://scala-lang.org/files/archive/spec/2.12/06-expressions.html#constant-expressions). Used in this
-way, `inline` is equivalent to Java and Scala 2's `final`. Note that `final`, meaning
+be a [constant expression](https://scala-lang.org/files/archive/spec/2.13/06-expressions.html#constant-expressions).
+Used in this way, `inline` is equivalent to Java and Scala 2's `final`. Note that `final`, meaning
 _inlined constant_, is still supported in Dotty, but will be phased out.
 
 The `Logger` object contains a definition of the **inline method** `log`. This
@@ -58,7 +58,7 @@ def factorial(n: BigInt): BigInt = {
 }
 ```
 
-If `Config.logging == false`, this will be rewritten (simplified) to
+If `Config.logging == false`, this will be rewritten (simplified) to:
 
 ```scala
 def factorial(n: BigInt): BigInt = {
@@ -89,10 +89,10 @@ def factorial(n: BigInt): BigInt = {
 }
 ```
 
-Note, that the by-value parameter is evaluated only once, per the usual Scala
+Note, that the by-value parameter `msg` is evaluated only once, per the usual Scala
 semantics, by binding the value and reusing the `msg` through the body of
-`factorial`. Also, note the special handling of setting to the private var
-`indent` by generating the setter method `def inline$indent_=`.
+`factorial`. Also, note the special handling of the assignment to the private var
+`indent`. It is achieved by generating a setter method `def inline$indent_=` and calling it instead.
 
 ### Recursive Inline Methods
 
@@ -108,24 +108,39 @@ inline def power(x: Double, n: Int): Double = {
     val y = power(x, n / 2)
     if (n % 2 == 0) y * y else y * y * x
   }
-
-  power(expr, 10)
-    // translates to
-    //
-    //    val x = expr
-    //    val y1 = x * x   // ^2
-    //    val y2 = y1 * y1 // ^4
-    //    val y3 = y2 * x  // ^5
-    //    y3 * y3          // ^10
 }
+
+power(expr, 10)
+// translates to
+//
+//    val x = expr
+//    val y1 = x * x   // ^2
+//    val y2 = y1 * y1 // ^4
+//    val y3 = y2 * x  // ^5
+//    y3 * y3          // ^10
 ```
 
-Parameters of inline methods can be marked `inline`. This means
-that actual arguments to these parameters must be constant expressions.
-For example:
+Parameters of inline methods can have an `inline` modifier as well. This means
+that actual arguments to these parameters will be inlined in the body of the
+`inline def`. `inline` parameters have call semantics equivalent to by-name parameters
+but allow for duplication of the code in the argument. It is usually useful when constant
+values need to be propagated to allow further optimizations/reductions.
+
+The following example shows the difference in translation between by-value, by-name and `inline`
+parameters:
 
 ```scala
-inline def power(x: Double, inline n: Int): Double
+inline def funkyAssertEquals(actual: Double, expected: =>Double, inline delta: Double): Unit =
+  if (actual - expected).abs > delta then
+    throw new AssertionError(s"difference between ${expected} and ${actual} was larger than ${delta}")
+
+funkyAssertEquals(computeActual(), computeExpected(), computeDelta())
+// translates to
+//
+//    val actual = computeActual()
+//    def expected = computeExpected()
+//    if (actual - expected).abs > computeDelta() then
+//      throw new AssertionError(s"difference between ${expected} and ${actual} was larger than ${computeDelta()}")
 ```
 
 ### Relationship to @inline
@@ -200,12 +215,12 @@ obj2.meth()    // OK
 Here, the inline method `choose` returns an object of either of the two dynamic types
 `A` and `B`. If `choose` had been declared with a normal return type `: A`, the result
 of its expansion would always be of type `A`, even though the computed value might be
-of type `B`. The inline method is "blackbox"  in the sense that details of its
+of type `B`. The inline method is a "blackbox" in the sense that details of its
 implementation do not leak out. But with the specializing return type `<: A`,
 the type of the expansion is the type of the expanded body. If the argument `b`
 is `true`, that type is `A`, otherwise it is `B`. Consequently, calling `meth` on `obj2`
 type-checks since `obj2` has the same type as the expansion of `choose(false)`, which is `B`.
-Inline methods with specializing return types are "whitebox" in that the type
+Inline methods with specializing return types are a "whitebox" in the sense that the type
 of an application of such a method can be more specialized than its declared
 return type, depending on how the method expands.
 
@@ -216,14 +231,14 @@ type `1`.
 ```scala
 inline def zero() <: Int = 0
 
-final val one: 1 = zero() + 1
+val one: 1 = zero() + 1
 ```
 
 ## Inline Conditionals
 
-If the condition of an if-then-else expressions is a constant, the expression simplifies to
-the selected branch. Prefixing an if-then-else expression with `inline` forces
-the condition to be a constant, and thus guarantees that the conditional will always
+If the condition of an if-then-else expressions is a constant expression then it simplifies to
+the selected branch. Prefixing an if-then-else expression with `inline` enforces that
+the condition has to be a constant expression, and thus guarantees that the conditional will always
 simplify.
 
 Example:
@@ -272,8 +287,8 @@ The scrutinee `x` is examined statically and the inline match is reduced
 accordingly returning the corresponding value (with the type specialized due to
 the `<:` in the return type). This example performs a simple type test over the
 scrutinee. The type can have a richer structure like the simple ADT below.
-`toInt` matches the structure of a number in Church-encoding and _computes_ the
-corresponding integer.
+`toInt` matches the structure of a number in [Church-encoding](https://en.wikipedia.org/wiki/Church_encoding)
+and _computes_ the corresponding integer.
 
 ```scala
 trait Nat
@@ -295,9 +310,9 @@ val intTwo: 2 = natTwo
 
 The `scala.compiletime` package contains helper definitions that provide support for compile time operations over values. They are described in the following.
 
-#### `constValue`, `constValueOpt`, and the `S` combinator
+### `constValue`, `constValueOpt`, and the `S` combinator
 
-`constvalue` is a function that produces the constant value represented by a
+`constValue` is a function that produces the constant value represented by a
 type.
 
 ```scala
@@ -317,13 +332,13 @@ enabling us to handle situations where a value is not present. Note that `S` is
 the type of the successor of some singleton type. For example the type `S[1]` is
 the singleton type `2`.
 
-#### `erasedValue`
+### `erasedValue`
 
-We have seen so far inline methods that take terms (tuples and integers) as
+So far we have seen inline methods that take terms (tuples and integers) as
 parameters. What if we want to base case distinctions on types instead? For
 instance, one would like to be able to write a function `defaultValue`, that,
-given a type `T` returns optionally the default value of `T`, if it exists. In
-fact, we can already express this using rewrite match expressions and a simple
+given a type `T`, returns optionally the default value of `T`, if it exists.
+We can already express this using rewrite match expressions and a simple
 helper function, `scala.compiletime.erasedValue`, which is defined as follows:
 
 ```scala
@@ -333,11 +348,13 @@ erased def erasedValue[T]: T = ???
 The `erasedValue` function _pretends_ to return a value of its type argument
 `T`. In fact, it would always raise a `NotImplementedError` exception when
 called. But the function can in fact never be called, since it is declared
-`erased`, so can be only used at compile-time during type checking.
+`erased`, so can only be used at compile-time during type checking.
 
 Using `erasedValue`, we can then define `defaultValue` as follows:
 
 ```scala
+import scala.compiletime.erasedValue
+
 inline def defaultValue[T] = inline erasedValue[T] match {
   case _: Byte => Some(0: Byte)
   case _: Char => Some(0: Char)
@@ -360,10 +377,11 @@ Then:
   val dAny: None.type = defaultValue[Any]
 ```
 
-As another example, consider the type-level version of `toNat` above the we call
-`toIntT`: given a _type_ representing a Peano number, return the integer _value_
-corresponding to it. Consider the definitions of numbers as in the _Inline
-Match_ section aboce. Here's how `toIntT` can be defined:
+As another example, consider the type-level version of `toInt` below:
+given a _type_ representing a Peano number,
+return the integer _value_ corresponding to it.
+Consider the definitions of numbers as in the _Inline
+Match_ section above. Here is how `toIntT` can be defined:
 
 ```scala
 inline def toIntT[N <: Nat] <: Int = inline scala.compiletime.erasedValue[N] match {
@@ -375,10 +393,10 @@ final val two = toIntT[Succ[Succ[Zero.type]]]
 ```
 
 `erasedValue` is an `erased` method so it cannot be used and has no runtime
-behavior. Since `toInt` performs static checks over the static type of `N` we
+behavior. Since `toIntT` performs static checks over the static type of `N` we
 can safely use it to scrutinize its return type (`S[S[Z]]` in this case).
 
-#### `error`
+### `error`
 
 The `error` method is used to produce user-defined compile errors during inline expansion.
 It has the following signature:
@@ -391,6 +409,8 @@ If an inline expansion results in a call `error(msgStr)` the compiler
 produces an error message containing the given `msgStr`.
 
 ```scala
+import scala.compiletime.{error, code}
+
 inline def fail() = {
   error("failed for a reason")
 }
@@ -403,13 +423,58 @@ or
 inline def fail(p1: => Any) = {
   error(code"failed on: $p1")
 }
-fail(indentity("foo")) // error: failed on: indentity("foo")
+fail(identity("foo")) // error: failed on: identity("foo")
 ```
 
-## Implicit Matches
+### The `scala.compiletime.ops` package
 
-**Note** The syntax described in this section is currently under revision.
-[Here is the new version which will be implemented in Dotty 0.19](../metaprogramming-new/inline.html).
+The `scala.compiletime.ops` package contains types that provide support for
+primitive operations on singleton types. For example,
+`scala.compiletime.ops.int.*` provides support for multiplying two singleton
+`Int` types, and `scala.compiletime.ops.boolean.&&` for the conjunction of two
+`Boolean` types. When all arguments to a type in `scala.compiletime.ops` are
+singleton types, the compiler can evaluate the result of the operation.
+
+```scala
+import scala.compiletime.ops.int._
+import scala.compiletime.ops.boolean._
+
+val conjunction: true && true = true
+val multiplication: 3 * 5 = 15
+```
+
+Many of these singleton operation types are meant to be used infix (as in [SLS §
+3.2.8](https://www.scala-lang.org/files/archive/spec/2.12/03-types.html#infix-types)),
+and are annotated with [`@infix`](scala.annotation.infix) accordingly.
+
+Since type aliases have the same precedence rules as their term-level
+equivalents, the operations compose with the expected precedence rules:
+
+```scala
+import scala.compiletime.ops.int._
+val x: 1 + 2 * 3 = 7
+```
+
+The operation types are located in packages named after the type of the
+left-hand side parameter: for instance, `scala.compiletime.ops.int.+` represents
+addition of two numbers, while `scala.compiletime.ops.string.+` represents string
+concatenation. To use both and distinguish the two types from each other, a
+match type can dispatch to the correct implementation:
+
+```scala
+import scala.compiletime.ops._
+import scala.annotation.infix
+
+@infix type +[X <: Int | String, Y <: Int | String] = (X, Y) match {
+  case (Int, Int) => int.+[X, Y]
+  case (String, String) => string.+[X, Y]
+}
+
+val concat: "a" + "b" = "ab"
+val addition: 1 + 1 = 2
+```
+
+## Summoning Implicits Selectively
 
 It is foreseen that many areas of typelevel programming can be done with rewrite
 methods instead of implicits. But sometimes implicits are unavoidable. The
@@ -444,27 +509,25 @@ There are some proposals to improve the situation in specific areas, for
 instance by allowing more elaborate schemes to specify priorities. But they all
 keep the viral nature of implicit search programs based on logic programming.
 
-By contrast, the new `implicit match` construct makes implicit search available
+By contrast, the new `summonFrom` construct makes implicit search available
 in a functional context. To solve the problem of creating the right set, one
 would use it as follows:
 ```scala
-inline def setFor[T]: Set[T] = implicit match {
-  case ord: Ordering[T] => new TreeSet[T]
-  case _                => new HashSet[T]
+import scala.compiletime.summonFrom
+
+inline def setFor[T]: Set[T] = summonFrom {
+  case given ord: Ordering[T] => new TreeSet[T]
+  case _                      => new HashSet[T]
 }
 ```
-An implicit match uses the `implicit` keyword in the place of the scrutinee. Its
-patterns are type ascriptions of the form `identifier : Type`.
+A `summonFrom` call takes a pattern matching closure as argument. All patterns
+in the closure are type ascriptions of the form `identifier : Type`.
 
 Patterns are tried in sequence. The first case with a pattern `x: T` such that
-an implicit value of type `T` can be summoned is chosen. The variable `x` is
-then bound to the implicit value for the remainder of the case. It can in turn
-be used as an implicit in the right hand side of the case. It is an error if one
-of the tested patterns gives rise to an ambiguous implicit search.
+an implicit value of type `T` can be summoned is chosen. If the pattern is prefixed
+with `given`, the variable `x` is bound to the implicit value for the remainder of the case. It can in turn be used as an implicit in the right hand side of the case. It is an error if one of the tested patterns gives rise to an ambiguous implicit search.
 
-An implicit matches is considered to be a special kind of a inline match. This
-means it can only occur in the body of an inline method, and it must be reduced
-at compile time.
+`summonFrom` applications must be reduced at compile time.
 
 Consequently, if we summon an `Ordering[String]` the code above will return a
 new instance of `TreeSet[String]`.
@@ -489,8 +552,16 @@ inline def f: Any = summonFrom {
 }
 ```
 
+## `summonInline`
+
+The shorthand `summonInline` provides a simple way to write a `summon` that is delayed until the call is inlined.
+```scala
+inline def summonInline[T] <: T = summonFrom {
+  case t: T => t
+}
+```
+
 ### Reference
 
-For more info, see [PR #4927](https://github.com/lampepfl/dotty/pull/4768),
-which explains how inline methods can be used for typelevel programming and code
-specialization.
+For more info, see [PR #4768](https://github.com/lampepfl/dotty/pull/4768),
+which explains how `summonFrom`'s predecessor (implicit matches) can be used for typelevel programming and code specialization and [PR #7201](https://github.com/lampepfl/dotty/pull/7201) which explains the new `summonFrom` syntax.

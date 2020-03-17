@@ -1,29 +1,27 @@
 import scala.quoted._
-import scala.quoted.matching._
-
 
 object Macros {
 
-  inline def matches[A, B](a: => A, b: => B): Unit = ${impl('a, 'b)}
+  inline def matches[A, B](inline a: A, inline b: B): Unit = ${impl('a, 'b)}
 
-  private def impl[A, B](a: Expr[A], b: Expr[B])(given qctx: QuoteContext): Expr[Unit] = {
-    import qctx.tasty.{Bind => _, _}
+  private def impl[A, B](a: Expr[A], b: Expr[B])(using qctx: QuoteContext) : Expr[Unit] = {
+    import qctx.tasty._
 
-    val res = scala.internal.quoted.Expr.unapply[Tuple, Tuple](a)(b, true, qctx).map { tup =>
+    val res = scala.internal.quoted.Expr.unapply[Tuple, Tuple](a)(using b, true, qctx).map { tup =>
       tup.toArray.toList.map {
         case r: Expr[_] =>
           s"Expr(${r.unseal.show})"
         case r: quoted.Type[_] =>
           s"Type(${r.unseal.show})"
-        case r: Bind[_] =>
-          s"Bind(${r.name})"
+        case r: String =>
+          s"String($r)"
       }
     }
 
     '{
-      println("Scrutinee: " + ${a.unseal.show.toExpr})
-      println("Pattern: " + ${b.unseal.show.toExpr})
-      println("Result: " + ${res.toString.toExpr})
+      println("Scrutinee: " + ${Expr(a.unseal.show)})
+      println("Pattern: " + ${Expr(b.unseal.show)})
+      println("Result: " + ${Expr(res.toString)})
       println()
     }
   }

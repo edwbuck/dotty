@@ -1,4 +1,5 @@
-package dotty.tools.dotc
+package dotty.tools
+package dotc
 package transform
 
 import MegaPhase._
@@ -97,15 +98,13 @@ class ExplicitOuter extends MiniPhase with InfoTransformer { thisPhase =>
         }
 
       val parents1 =
-        for (parent <- impl.parents) yield {
+        for (parent <- impl.parents) yield
           val parentCls = parent.tpe.classSymbol.asClass
-          if (parentCls.is(Trait))
-            parent
-          else parent match { // ensure class parent is a constructor
-            case parent: TypeTree => New(parent.tpe, Nil).withSpan(impl.span)
+          parent match // ensure class parent is a constructor
+            case parent: TypeTree
+            if !parentCls.is(Trait) && !defn.NotRuntimeClasses.contains(parentCls) =>
+              New(parent.tpe, Nil).withSpan(impl.span)
             case _ => parent
-          }
-        }
       cpy.Template(impl)(parents = parents1, body = impl.body ++ newDefs)
     }
     else impl
@@ -180,7 +179,7 @@ object ExplicitOuter {
 
   /** A new param accessor for the outer field in class `cls` */
   private def newOuterParamAccessor(cls: ClassSymbol)(implicit ctx: Context) =
-    newOuterSym(cls, cls, nme.OUTER, Private | ParamAccessor)
+    newOuterSym(cls, cls, nme.OUTER, Private | Local | ParamAccessor)
 
   /** A new outer accessor for class `cls` which is a member of `owner` */
   private def newOuterAccessor(owner: ClassSymbol, cls: ClassSymbol)(implicit ctx: Context) = {
@@ -241,7 +240,7 @@ object ExplicitOuter {
     needsOuterIfReferenced(cls) && outerAccessor(cls).exists
 
   /** Class constructor takes an outer argument. Can be called only after phase ExplicitOuter. */
-  private def hasOuterParam(cls: ClassSymbol)(implicit ctx: Context): Boolean =
+  def hasOuterParam(cls: ClassSymbol)(implicit ctx: Context): Boolean =
     !cls.is(Trait) && needsOuterIfReferenced(cls) && outerAccessor(cls).exists
 
   /** Tree references an outer class of `cls` which is not a static owner.
@@ -324,6 +323,9 @@ object ExplicitOuter {
       tpe
   }
 
+  def (sym: Symbol).isOuterParamAccessor(using Context): Boolean =
+    sym.is(ParamAccessor) && sym.name == nme.OUTER
+
   def outer(implicit ctx: Context): OuterOps = new OuterOps(ctx)
 
   /** The operations in this class
@@ -388,34 +390,27 @@ object ExplicitOuter {
      */
     def path(start: Tree = This(ctx.owner.lexicallyEnclosingClass.asClass),
              toCls: Symbol = NoSymbol,
-             count: Int = -1): Tree = try {
-      @tailrec def loop(tree: Tree, count: Int): Tree = {
-        val treeCls = tree.tpe.widen.classSymbol
-        val outerAccessorCtx = ctx.withPhaseNoLater(ctx.lambdaLiftPhase) // lambdalift mangles local class names, which means we cannot reliably find outer acessors anymore
-        ctx.log(i"outer to $toCls of $tree: ${tree.tpe}, looking for ${outerAccName(treeCls.asClass)(outerAccessorCtx)} in $treeCls")
-        if (count == 0 || count < 0 && treeCls == toCls) tree
-        else {
-          val acc = outerAccessor(treeCls.asClass)(outerAccessorCtx)
-          assert(acc.exists,
-              i"failure to construct path from ${ctx.owner.ownersIterator.toList}%/% to `this` of ${toCls.showLocated};\n${treeCls.showLocated} does not have an outer accessor")
-          loop(tree.select(acc).ensureApplied, count - 1)
-        }
-      }
-      ctx.log(i"computing outerpath to $toCls from ${ctx.outersIterator.map(_.owner).toList}")
-      loop(start, count)
-    }
-    catch {
-      case ex: ClassCastException =>
-        throw new ClassCastException(i"no path exists from ${ctx.owner.enclosingClass} to $toCls")
-    }
+             count: Int = -1): Tree =
+      try
+        @tailrec def loop(tree: Tree, count: Int): Tree =
+          val treeCls = tree.tpe.widen.classSymbol
+          val outerAccessorCtx = ctx.withPhaseNoLater(ctx.lambdaLiftPhase) // lambdalift mangles local class names, which means we cannot reliably find outer acessors anymore
+          ctx.log(i"outer to $toCls of $tree: ${tree.tpe}, looking for ${outerAccName(treeCls.asClass)(outerAccessorCtx)} in $treeCls")
+          if (count == 0 || count < 0 && treeCls == toCls) tree
+          else
+            val enclClass = ctx.owner.lexicallyEnclosingClass.asClass
+            val outerAcc = tree match
+              case tree: This if tree.symbol == enclClass && !enclClass.is(Trait) =>
+                outerParamAccessor(enclClass)(using outerAccessorCtx)
+              case _ =>
+                outerAccessor(treeCls.asClass)(using outerAccessorCtx)
+            assert(outerAcc.exists,
+                i"failure to construct path from ${ctx.owner.ownersIterator.toList}%/% to `this` of ${toCls.showLocated};\n${treeCls.showLocated} does not have an outer accessor")
+            loop(tree.select(outerAcc).ensureApplied, count - 1)
 
-    /** The outer parameter definition of a constructor if it needs one */
-    def paramDefs(constr: Symbol): List[ValDef] =
-      if (constr.isConstructor && hasOuterParam(constr.owner.asClass)) {
-        val MethodTpe(outerName :: _, outerType :: _, _) = constr.info
-        val outerSym = ctx.newSymbol(constr, outerName, Param, outerType)
-        ValDef(outerSym) :: Nil
-      }
-      else Nil
+        ctx.log(i"computing outerpath to $toCls from ${ctx.outersIterator.map(_.owner).toList}")
+        loop(start, count)
+      catch case ex: ClassCastException =>
+        throw new ClassCastException(i"no path exists from ${ctx.owner.enclosingClass} to $toCls")
   }
 }

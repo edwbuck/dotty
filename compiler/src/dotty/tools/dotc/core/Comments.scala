@@ -24,7 +24,7 @@ object Comments {
     */
   class ContextDocstrings {
 
-    private[this] val _docstrings: MutableSymbolMap[Comment] = newMutableSymbolMap
+    private val _docstrings: MutableSymbolMap[Comment] = newMutableSymbolMap
 
     val templateExpander: CommentExpander = new CommentExpander
 
@@ -93,7 +93,7 @@ object Comments {
      *  def foo: A = ???
      *  }}}
      */
-    private[this] def decomposeUseCase(body: String, span: Span, start: Int, end: Int)(implicit ctx: Context): UseCase = {
+    private def decomposeUseCase(body: String, span: Span, start: Int, end: Int)(implicit ctx: Context): UseCase = {
       def subPos(start: Int, end: Int) =
         if (span == NoSpan) NoSpan
         else {
@@ -121,7 +121,7 @@ object Comments {
         val tree = new Parser(SourceFile.virtual("<usecase>", code)).localDef(codePos.start)
         tree match {
           case tree: untpd.DefDef =>
-            val newName = ctx.freshNames.newName(tree.name, NameKinds.DocArtifactName)
+            val newName = ctx.compilationUnit.freshNames.newName(tree.name, NameKinds.DocArtifactName)
             untpd.cpy.DefDef(tree)(name = newName)
           case _ =>
             ctx.error(ProperDefinitionNotFound(), ctx.source.atSpan(codePos))

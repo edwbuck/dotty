@@ -341,8 +341,9 @@ object ClassfileConstants {
       case JAVA_ACC_PRIVATE    => Private
       case JAVA_ACC_PROTECTED  => Protected
       case JAVA_ACC_FINAL      => Final
-      case JAVA_ACC_SYNTHETIC  => Synthetic
+      case JAVA_ACC_SYNTHETIC  => SyntheticArtifact
       case JAVA_ACC_STATIC     => JavaStatic
+      case JAVA_ACC_ENUM       => Enum
       case JAVA_ACC_ABSTRACT   => if (isClass) Abstract else Deferred
       case JAVA_ACC_INTERFACE  => PureInterfaceCreationFlags | JavaDefined
       case _                   => EmptyFlags

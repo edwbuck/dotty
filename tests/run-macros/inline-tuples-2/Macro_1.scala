@@ -1,11 +1,11 @@
 
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift
 
 object Macros {
 
-  def impl(tup: Tuple1[Int])(given QuoteContext): Expr[Int] = tup._1
+  def impl(tup: Expr[Tuple1[Int]]) (using QuoteContext): Expr[Int] = tup.unliftOrError._1
 
-  def impl2(tup: Tuple1[Tuple1[Int]])(given QuoteContext): Expr[Int] = impl(tup._1)
+  def impl2(tup: Expr[Tuple1[Tuple1[Int]]]) (using QuoteContext): Expr[Int] = impl(tup.unliftOrError._1)
 
 }

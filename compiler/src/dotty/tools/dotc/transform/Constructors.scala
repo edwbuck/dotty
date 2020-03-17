@@ -177,6 +177,8 @@ class Constructors extends MiniPhase with IdentityDenotTransformer { thisPhase =
              ) &&
              fn.symbol.info.resultType.classSymbol == outerParam.info.classSymbol =>
           ref(outerParam)
+        case tree: RefTree if tree.symbol.is(ParamAccessor) && tree.symbol.name == nme.OUTER =>
+          ref(outerParam)
         case _ =>
           super.transform(tree)
       }
@@ -212,7 +214,6 @@ class Constructors extends MiniPhase with IdentityDenotTransformer { thisPhase =
         }
         splitStats(stats1)
       case Nil =>
-        (Nil, Nil)
     }
     splitStats(tree.body)
 
@@ -220,6 +221,10 @@ class Constructors extends MiniPhase with IdentityDenotTransformer { thisPhase =
     val copyParams = accessors flatMap { acc =>
       if (!isRetained(acc)) {
         dropped += acc
+        Nil
+      }
+      else if (!isRetained(acc.field)) { // It may happen for unit fields, tests/run/i6987.scala
+        dropped += acc.field
         Nil
       }
       else {

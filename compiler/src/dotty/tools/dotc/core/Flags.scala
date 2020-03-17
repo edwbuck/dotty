@@ -22,42 +22,42 @@ object Flags {
 
   type Flag = opaques.Flag
 
-  given /*FlagOps*/ {
+  extension on (x: FlagSet) {
 
-    def (x: FlagSet) bits: Long = opaques.toBits(x)
+    def bits: Long = opaques.toBits(x)
 
     /** The union of the given flag sets.
      *  Combining two FlagSets with `|` will give a FlagSet
      *  that has the intersection of the applicability to terms/types
      *  of the two flag sets. It is checked that the intersection is not empty.
      */
-    def (x: FlagSet) | (y: FlagSet): FlagSet =
+    def | (y: FlagSet): FlagSet =
       if (x.bits == 0) y
       else if (y.bits == 0) x
       else {
         val tbits = x.bits & y.bits & KINDFLAGS
         if (tbits == 0)
-          assert(false, s"illegal flagset combination: $x and $y")
+          assert(false, s"illegal flagset combination: ${x.flagsString} and ${y.flagsString}")
         FlagSet(tbits | ((x.bits | y.bits) & ~KINDFLAGS))
       }
 
     /** The intersection of the given flag sets */
-    def (x: FlagSet) & (y: FlagSet): FlagSet = FlagSet(x.bits & y.bits)
+    def & (y: FlagSet): FlagSet = FlagSet(x.bits & y.bits)
 
     /** The intersection of a flag set with the complement of another flag set */
-    def (x: FlagSet) &~ (y: FlagSet): FlagSet = {
+    def &~ (y: FlagSet): FlagSet = {
       val tbits = x.bits & KINDFLAGS
       if ((tbits & y.bits) == 0) x
       else FlagSet(tbits | ((x.bits & ~y.bits) & ~KINDFLAGS))
     }
 
-    def (x: FlagSet) ^ (y: FlagSet) =
+    def ^ (y: FlagSet) =
       FlagSet((x.bits | y.bits) & KINDFLAGS | (x.bits ^ y.bits) & ~KINDFLAGS)
 
     /** Does the given flag set contain the given flag?
      *  This means that both the kind flags and the carrier bits have non-empty intersection.
      */
-    def (x: FlagSet) is (flag: Flag): Boolean = {
+    def is (flag: Flag): Boolean = {
       val fs = x.bits & flag.bits
       (fs & KINDFLAGS) != 0 && (fs & ~KINDFLAGS) != 0
     }
@@ -65,12 +65,12 @@ object Flags {
     /** Does the given flag set contain the given flag
      *  and at the same time contain none of the flags in the `butNot` set?
      */
-    def (x: FlagSet) is (flag: Flag, butNot: FlagSet): Boolean = x.is(flag) && !x.isOneOf(butNot)
+    def is (flag: Flag, butNot: FlagSet): Boolean = x.is(flag) && !x.isOneOf(butNot)
 
     /** Does the given flag set have a non-empty intersection with another flag set?
      *  This means that both the kind flags and the carrier bits have non-empty intersection.
      */
-    def (x: FlagSet) isOneOf (flags: FlagSet): Boolean = {
+    def isOneOf (flags: FlagSet): Boolean = {
       val fs = x.bits & flags.bits
       (fs & KINDFLAGS) != 0 && (fs & ~KINDFLAGS) != 0
     }
@@ -78,12 +78,12 @@ object Flags {
     /** Does the given flag set have a non-empty intersection with another flag set,
      *  and at the same time contain none of the flags in the `butNot` set?
      */
-    def (x: FlagSet) isOneOf (flags: FlagSet, butNot: FlagSet): Boolean = x.isOneOf(flags) && !x.isOneOf(butNot)
+    def isOneOf (flags: FlagSet, butNot: FlagSet): Boolean = x.isOneOf(flags) && !x.isOneOf(butNot)
 
     /** Does a given flag set have all of the flags of another flag set?
      *  Pre: The intersection of the term/type flags of both sets must be non-empty.
      */
-    def (x: FlagSet) isAllOf (flags: FlagSet): Boolean = {
+    def isAllOf (flags: FlagSet): Boolean = {
       val fs = x.bits & flags.bits
       ((fs & KINDFLAGS) != 0 || flags.bits == 0) &&
       (fs >>> TYPESHIFT) == (flags.bits >>> TYPESHIFT)
@@ -93,36 +93,36 @@ object Flags {
      *  and at the same time contain none of the flags in the `butNot` set?
      *  Pre: The intersection of the term/type flags of both sets must be non-empty.
      */
-    def (x: FlagSet) isAllOf (flags: FlagSet, butNot: FlagSet): Boolean = x.isAllOf(flags) && !x.isOneOf(butNot)
+    def isAllOf (flags: FlagSet, butNot: FlagSet): Boolean = x.isAllOf(flags) && !x.isOneOf(butNot)
 
-    def (x: FlagSet) isEmpty: Boolean = (x.bits & ~KINDFLAGS) == 0
+    def isEmpty: Boolean = (x.bits & ~KINDFLAGS) == 0
 
     /** Is a given flag set a subset of another flag set? */
-    def (x: FlagSet) <= (y: FlagSet): Boolean = (x.bits & y.bits) == x.bits
+    def <= (y: FlagSet): Boolean = (x.bits & y.bits) == x.bits
 
     /** Does the given flag set apply to terms? */
-    def (x: FlagSet) isTermFlags: Boolean = (x.bits & TERMS) != 0
+    def isTermFlags: Boolean = (x.bits & TERMS) != 0
 
     /** Does the given flag set apply to terms? */
-    def (x: FlagSet) isTypeFlags: Boolean = (x.bits & TYPES) != 0
+    def isTypeFlags: Boolean = (x.bits & TYPES) != 0
 
     /** The given flag set with all flags transposed to be type flags */
-    def (x: FlagSet) toTypeFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits & ~KINDFLAGS | TYPES)
+    def toTypeFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits & ~KINDFLAGS | TYPES)
 
     /** The given flag set with all flags transposed to be term flags */
-    def (x: FlagSet) toTermFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits & ~KINDFLAGS | TERMS)
+    def toTermFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits & ~KINDFLAGS | TERMS)
 
     /** The given flag set with all flags transposed to be common flags */
-    def (x: FlagSet) toCommonFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits | KINDFLAGS)
+    def toCommonFlags: FlagSet = if (x.bits == 0) x else FlagSet(x.bits | KINDFLAGS)
 
     /** The number of non-kind flags in the given flag set */
-    def (x: FlagSet) numFlags: Int = java.lang.Long.bitCount(x.bits & ~KINDFLAGS)
+    def numFlags: Int = java.lang.Long.bitCount(x.bits & ~KINDFLAGS)
 
     /** The lowest non-kind bit set in the given flag set */
-    def (x: FlagSet) firstBit: Int = java.lang.Long.numberOfTrailingZeros(x.bits & ~KINDFLAGS)
+    def firstBit: Int = java.lang.Long.numberOfTrailingZeros(x.bits & ~KINDFLAGS)
 
     /** The  list of non-empty names of flags with given index idx that are set in the given flag set */
-    private def (x: FlagSet) flagString(idx: Int): List[String] =
+    private def flagString(idx: Int): List[String] =
       if ((x.bits & (1L << idx)) == 0) Nil
       else {
         def halfString(kind: Int) =
@@ -133,8 +133,8 @@ object Flags {
         strs filter (_.nonEmpty)
       }
 
-    /** The list of non-empty names of flags that are set in teh given flag set */
-    def (x: FlagSet) flagStrings(privateWithin: String): Seq[String] = {
+    /** The list of non-empty names of flags that are set in the given flag set */
+    def flagStrings(privateWithin: String = ""): Seq[String] = {
       var rawStrings = (2 to MaxFlag).flatMap(x.flagString(_)) // DOTTY problem: cannot drop with (_)
       if (!privateWithin.isEmpty && !x.is(Protected))
       	rawStrings = rawStrings :+ "private"
@@ -149,7 +149,7 @@ object Flags {
     }
 
     /** The string representation of the given flag set */
-    def (x: FlagSet) flagsString: String = x.flagStrings("").mkString(" ")
+    def flagsString: String = x.flagStrings("").mkString(" ")
   }
 
   def termFlagSet(x: Long) = FlagSet(TERMS | x)
@@ -237,8 +237,8 @@ object Flags {
   /** A value or variable accessor (getter or setter) */
   val (AccessorOrSealed @ _, Accessor @ _, Sealed @ _) = newFlags(11, "<accessor>", "sealed")
 
-  /** A mutable var */
-  val (_, Mutable @ _, _) = newFlags(12, "mutable")
+  /** A mutable var, an open class */
+  val (MutableOrOpen @ __, Mutable @ _, Open @ _) = newFlags(12, "mutable", "open")
 
   /** Symbol is local to current class (i.e. private[this] or protected[this]
    *  pre: Private or Protected are also set
@@ -296,12 +296,12 @@ object Flags {
   val (_, CaseAccessor @ _, _) = newFlags(25, "<caseaccessor>")
 
   /** A Scala 2x super accessor / an unpickled Scala 2.x class */
-  val (SuperAccessorOrScala2x @ _, Scala2SuperAccessor @ _, Scala2x @ _) = newFlags(26, "<superaccessor>", "<scala-2.x>")
+  val (SuperParamAliasOrScala2x @ _, SuperParamAlias @ _, Scala2x @ _) = newFlags(26, "<super-param-alias>", "<scala-2.x>")
 
   /** A method that has default params */
   val (_, DefaultParameterized @ _, _) = newFlags(27, "<defaultparam>")
 
-  /** An extension method */
+  /** An extension method, or a collective extension instance */
   val (_, Extension @ _, _) = newFlags(28, "<extension>")
 
   /** An inferable (`given`) parameter */
@@ -339,7 +339,7 @@ object Flags {
   val (_, DefaultMethod @ _, _) = newFlags(38, "<defaultmethod>")
 
   /** Symbol is an enum class or enum case (if used with case) */
-  val (Enum @ _, _, _) = newFlags(40, "<enum>")
+  val (Enum @ _, _, _) = newFlags(40, "enum")
 
   /** An export forwarder */
   val (Exported @ _, _, _) = newFlags(41, "exported")
@@ -371,8 +371,9 @@ object Flags {
   /** Symbol is a self name */
   val (_, SelfName @ _, _) = newFlags(54, "<selfname>")
 
-  /** An existentially bound symbol (Scala 2.x only) */
-  val (Scala2ExistentialCommon @ _, _, Scala2Existential @ _) = newFlags(55, "<existential>")
+  /** A Scala 2 superaccessor (only needed during Scala2Unpickling) /
+   *  an existentially bound symbol (Scala 2.x only) */
+  val (Scala2SpecialFlags @ _, Scala2SuperAccessor @ _, Scala2Existential @ _) = newFlags(55, "<existential>")
 
   /** Children were queried on this class */
   val (_, _, ChildrenQueried @ _) = newFlags(56, "<children-queried>")
@@ -422,7 +423,7 @@ object Flags {
     commonFlags(Private, Protected, Final, Case, Implicit, Given, Override, JavaStatic)
 
   val TypeSourceModifierFlags: FlagSet =
-    CommonSourceModifierFlags.toTypeFlags | Abstract | Sealed | Opaque
+    CommonSourceModifierFlags.toTypeFlags | Abstract | Sealed | Opaque | Open
 
   val TermSourceModifierFlags: FlagSet =
     CommonSourceModifierFlags.toTermFlags | Inline | AbsOverride | Lazy | Erased
@@ -439,10 +440,10 @@ object Flags {
   val FromStartFlags: FlagSet = commonFlags(
     Module, Package, Deferred, Method, Case,
     HigherKinded, Param, ParamAccessor,
-    Scala2ExistentialCommon, Mutable, Opaque, Touched, JavaStatic,
+    Scala2SpecialFlags, MutableOrOpen, Opaque, Touched, JavaStatic,
     OuterOrCovariant, LabelOrContravariant, CaseAccessor,
     Extension, NonMember, Implicit, Given, Permanent, Synthetic,
-    SuperAccessorOrScala2x, Inline)
+    SuperParamAliasOrScala2x, Inline, Macro)
 
   /** Flags that are not (re)set when completing the denotation, or, if symbol is
    *  a top-level class or object, when completing the denotation once the class
@@ -451,7 +452,6 @@ object Flags {
    */
   val AfterLoadFlags: FlagSet = commonFlags(
     FromStartFlags, AccessFlags, Final, AccessorOrSealed, LazyOrTrait, SelfName, JavaDefined)
-
 
   /** A value that's unstable unless complemented with a Stable flag */
   val UnstableValueFlags: FlagSet = Mutable | Method
@@ -500,14 +500,17 @@ object Flags {
 
   /** Flags that can apply to a module val */
   val RetainedModuleValFlags: FlagSet = RetainedModuleValAndClassFlags |
-    Override | Final | Method | Implicit | Given | Lazy |
+    Override | Final | Method | Implicit | Given | Lazy | Extension |
     Accessor | AbsOverride | StableRealizable | Captured | Synchronized | Erased
 
   /** Flags that can apply to a module class */
   val RetainedModuleClassFlags: FlagSet = RetainedModuleValAndClassFlags | Enum
 
   /** Flags retained in export forwarders */
-  val RetainedExportFlags = Given | Implicit | Extension
+  val RetainedExportFlags = Given | Implicit | Inline
+
+  /** Flags that apply only to classes */
+  val ClassOnlyFlags = Sealed | Open | Abstract.toTypeFlags
 
 // ------- Other flag sets -------------------------------------
 
@@ -515,6 +518,7 @@ object Flags {
   val AbstractOverride: FlagSet              = Abstract | Override
   val AbstractSealed: FlagSet                = Abstract | Sealed
   val AbstractOrTrait: FlagSet               = Abstract | Trait
+  val EffectivelyOpenFlags                   = Abstract | JavaDefined | Open | Scala2x | Trait
   val PrivateAccessor: FlagSet               = Accessor | Private
   val AccessorOrSynthetic: FlagSet           = Accessor | Synthetic
   val EnumCase: FlagSet                      = Case | Enum
@@ -526,7 +530,7 @@ object Flags {
   val DeferredOrLazyOrMethod: FlagSet        = Deferred | Lazy | Method
   val DeferredOrTermParamOrAccessor: FlagSet = Deferred | ParamAccessor | TermParam           // term symbols without right-hand sides
   val DeferredOrTypeParam: FlagSet           = Deferred | TypeParam                           // type symbols without right-hand sides
-  val EnumValue: FlagSet                     = Enum | JavaStatic | StableRealizable           // A Scala enum value
+  val EnumValue: FlagSet                     = Enum | StableRealizable           // A Scala enum value
   val StableOrErased: FlagSet                = Erased | StableRealizable                      // Assumed to be pure
   val ExtensionMethod: FlagSet               = Extension | Method
   val FinalOrInline: FlagSet                 = Final | Inline
@@ -541,12 +545,14 @@ object Flags {
   val InlineByNameProxy: FlagSet             = InlineProxy | Method
   val JavaEnumTrait: FlagSet                 = JavaDefined | Enum                             // A Java enum trait
   val JavaEnumValue: FlagSet                 = JavaDefined | EnumValue                        // A Java enum value
+  val JavaOrPrivateOrSynthetic: FlagSet      = JavaDefined | Private | Synthetic
   val StaticProtected: FlagSet               = JavaDefined | JavaStatic | Protected           // Java symbol which is `protected` and `static`
   val JavaModule: FlagSet                    = JavaDefined | Module                           // A Java companion object
   val JavaInterface: FlagSet                 = JavaDefined | NoInits | Trait
   val JavaProtected: FlagSet                 = JavaDefined | Protected
   val MethodOrLazy: FlagSet                  = Lazy | Method
   val MutableOrLazy: FlagSet                 = Lazy | Mutable
+  val MethodOrLazyOrMutable: FlagSet         = Lazy | Method | Mutable
   val LiftedMethod: FlagSet                  = Lifted | Method
   val LocalParam: FlagSet                    = Local | Param
   val LocalParamAccessor: FlagSet            = Local | ParamAccessor | Private
@@ -557,10 +563,11 @@ object Flags {
   val PrivateMethod: FlagSet                 = Method | Private
   val NoInitsInterface: FlagSet              = NoInits | PureInterface
   val NoInitsTrait: FlagSet                  = NoInits | Trait                                // A trait that does not need to be initialized
-  val ValidForeverFlags: FlagSet             = Package | Permanent | Scala2ExistentialCommon
+  val ValidForeverFlags: FlagSet             = Package | Permanent | Scala2SpecialFlags
   val TermParamOrAccessor: FlagSet           = Param | ParamAccessor
   val PrivateParamAccessor: FlagSet          = ParamAccessor | Private
   val PrivateOrSynthetic: FlagSet            = Private | Synthetic
+  val PrivateOrArtifact: FlagSet             = Private | Artifact
   val ClassTypeParam: FlagSet                = Private | TypeParam
   val Scala2Trait: FlagSet                   = Scala2x | Trait
   val SyntheticArtifact: FlagSet             = Synthetic | Artifact

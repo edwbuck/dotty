@@ -1,6 +1,6 @@
 
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift
 
 class MyMap[Keys](private val underlying: Array[Int]) extends AnyVal {
   def get[K <: String](implicit i: Index[K, Keys]): Int = underlying(i.index)
@@ -29,11 +29,11 @@ object Index {
     import qctx.tasty._
 
     def name(tp: TypeOrBounds): String = tp match {
-      case Type.ConstantType(Constant(str: String)) => str
+      case ConstantType(Constant(str: String)) => str
     }
 
     def names(tp: TypeOrBounds): List[String] = tp match {
-      case Type.AppliedType(_, x1 :: x2 :: Nil) => name(x1) :: names(x2)
+      case AppliedType(_, x1 :: x2 :: Nil) => name(x1) :: names(x2)
       case _ => Nil
     }
 

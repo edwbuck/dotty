@@ -7,18 +7,18 @@ object Test extends App {
   class Printer {
     def print() = println("printing")
     object cfg extends Config
-    given config : Config
+    given config as Config
   }
 
   class Scanner {
     def scan() = println("scanning")
-    def (x: Any) scanned = scan()
+    def (x: Any).scanned = scan()
   }
   object Scanner extends Scanner
 
   object Copier {
     val printer = new Printer
-    export printer.{given, _}
+    export printer.{given _, _}
     export Scanner.{scan => scanIt, _}
 
     val config2 = summon[Config]
@@ -39,9 +39,17 @@ object Test extends App {
     1.scanned
   }
   test()
+
+  val _: Int = B.x
 }
 
 final class Foo {
   lazy val foo : Foo = new Foo
   export foo._ // nothing is exported
 }
+
+class A:
+  val x: Int = 1
+class B(a: A):
+  export a.x
+object B extends B(A())

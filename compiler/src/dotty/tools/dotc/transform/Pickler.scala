@@ -24,7 +24,7 @@ class Pickler extends Phase {
 
   override def phaseName: String = Pickler.name
 
-  // No need to repickle trees comming from TASTY
+  // No need to repickle trees coming from TASTY
   override def isRunnable(implicit ctx: Context): Boolean =
     super.isRunnable && !ctx.settings.fromTasty.value
 
@@ -78,7 +78,7 @@ class Pickler extends Phase {
         pickled.iterator.grouped(10).toList.zipWithIndex.map {
           case (row, i) => s"${i}0: ${row.mkString(" ")}"
         }
-        
+
       // println(i"rawBytes = \n$rawBytes%\n%") // DEBUG
       if (pickling ne noPrinter) {
         println(i"**** pickled info of $cls")

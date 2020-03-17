@@ -42,6 +42,7 @@ trait DottyTest extends ContextEscapeDetection {
   protected def initializeCtx(fc: FreshContext): Unit = {
     fc.setSetting(fc.settings.encoding, "UTF8")
     fc.setSetting(fc.settings.classpath, TestConfiguration.basicClasspath)
+    fc.setSetting(fc.settings.YerasedTerms, true)
     fc.setProperty(ContextDoc, new ContextDocstrings)
   }
 
@@ -64,7 +65,7 @@ trait DottyTest extends ContextEscapeDetection {
   def checkCompile(checkAfterPhase: String, source: String)(assertion: (tpd.Tree, Context) => Unit): Context = {
     val c = compilerWithChecker(checkAfterPhase)(assertion)
     val run = c.newRun
-    run.compileFromString(source)
+    run.compileFromStrings(List(source))
     run.runContext
   }
 
@@ -77,7 +78,7 @@ trait DottyTest extends ContextEscapeDetection {
     val dummyName = "x_x_x"
     val vals = typeStringss.flatten.zipWithIndex.map{case (s, x)=> s"val ${dummyName}$x: $s = ???"}.mkString("\n")
     val gatheredSource = s" ${source}\n object A$dummyName {$vals}"
-    checkCompile("frontend", gatheredSource) {
+    checkCompile("typer", gatheredSource) {
       (tree, context) =>
         implicit val ctx = context
         val findValDef: (List[tpd.ValDef], tpd.Tree) => List[tpd.ValDef] =

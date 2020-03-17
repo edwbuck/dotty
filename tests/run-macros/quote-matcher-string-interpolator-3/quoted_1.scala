@@ -1,16 +1,16 @@
 import scala.quoted._
-import scala.quoted.matching._
+
 
 
 object Macros {
 
-  inline def (self: => StringContext) S(args: => String*): String = ${impl('self, 'args)}
+  inline def (inline self: StringContext) S(args: => String*): String = ${impl('self, 'args)}
 
-  private def impl(self: Expr[StringContext], args: Expr[Seq[String]])(given QuoteContext): Expr[String] = {
+  private def impl(self: Expr[StringContext], args: Expr[Seq[String]])(using QuoteContext): Expr[String] = {
     self match {
-      case '{ StringContext(${ConstSeq(parts)}: _*) } =>
+      case '{ StringContext(${Varargs(Consts(parts))}: _*) } =>
         val upprerParts: List[String] = parts.toList.map(_.toUpperCase)
-        val upprerPartsExpr: Expr[List[String]] = upprerParts.map(_.toExpr).toExprOfList
+        val upprerPartsExpr: Expr[List[String]] = Expr.ofList(upprerParts.map(Expr(_)))
         '{ StringContext($upprerPartsExpr: _*).s($args: _*) }
       case _ =>
         '{

@@ -8,6 +8,7 @@ import StdNames.nme
 import ast.Trees._
 import typer.Implicits._
 import typer.ImportInfo
+import Variances.varianceSign
 import util.SourcePosition
 import java.lang.Integer.toOctalString
 import config.Config.summarizeDepth
@@ -15,10 +16,10 @@ import scala.util.control.NonFatal
 import scala.annotation.switch
 
 class PlainPrinter(_ctx: Context) extends Printer {
-  protected[this] implicit def ctx: Context = _ctx.addMode(Mode.Printing)
-  protected[this] def printDebug = ctx.settings.YprintDebug.value
+  protected implicit def ctx: Context = _ctx.addMode(Mode.Printing)
+  protected def printDebug = ctx.settings.YprintDebug.value
 
-  private[this] var openRecs: List[RecType] = Nil
+  private var openRecs: List[RecType] = Nil
 
   protected def maxToTextRecursions: Int = 100
 
@@ -60,8 +61,9 @@ class PlainPrinter(_ctx: Context) extends Printer {
           homogenize(tp.info)
         case tp: LazyRef =>
           homogenize(tp.ref)
-        case AppliedType(tycon, args) =>
-          tycon.dealias.appliedTo(args)
+        case tp @ AppliedType(tycon, args) =>
+          if (defn.isCompiletimeAppliedType(tycon.typeSymbol)) tp.tryCompiletimeConstantFold
+          else tycon.dealias.appliedTo(args)
         case _ =>
           tp
       }
@@ -124,7 +126,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   /** Direct references to these symbols are printed without their prefix for convenience.
    *  They are either aliased in scala.Predef or in the scala package object.
    */
-  private[this] lazy val printWithoutPrefix: Set[Symbol] =
+  private lazy val printWithoutPrefix: Set[Symbol] =
     (defn.ScalaPredefModule.termRef.typeAliasMembers
       ++ defn.ScalaPackageObject.termRef.typeAliasMembers).map(_.info.classSymbol).toSet
 
@@ -144,7 +146,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
         else
           toTextPrefix(tp.prefix) ~ selectionString(tp)
       case tp: TermParamRef =>
-        ParamRefNameString(tp) ~ ".type"
+        ParamRefNameString(tp) ~ lambdaHash(tp.binder) ~ ".type"
       case tp: TypeParamRef =>
         ParamRefNameString(tp) ~ lambdaHash(tp.binder)
       case tp: SingletonType =>
@@ -174,12 +176,12 @@ class PlainPrinter(_ctx: Context) extends Printer {
           def casesText = Text(cases.map(caseText), "\n")
             atPrec(InfixPrec) { toText(scrutinee) } ~
             keywordStr(" match ") ~ "{" ~ casesText ~ "}" ~
-            (" <: " ~ toText(bound) provided !bound.isRef(defn.AnyClass))
+            (" <: " ~ toText(bound) provided !bound.isAny)
         }.close
       case tp: ErrorType =>
         s"<error ${tp.msg.msg}>"
       case tp: WildcardType =>
-        if (tp.optBounds.exists) "(?" ~ toTextRHS(tp.bounds) ~ ")" else "?"
+        if (tp.optBounds.exists) "<?" ~ toTextRHS(tp.bounds) ~ ">" else "<?>"
       case NoType =>
         "<notype>"
       case NoPrefix =>
@@ -187,7 +189,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case tp: MethodType =>
         changePrec(GlobalPrec) {
           "("
-          ~ keywordText("given ").provided(tp.isContextualMethod)
+          ~ keywordText("using ").provided(tp.isContextualMethod)
           ~ keywordText("erased ").provided(tp.isErasedMethod)
           ~ keywordText("implicit ").provided(tp.isImplicitMethod && !tp.isContextualMethod)
           ~ paramsText(tp)
@@ -196,7 +198,11 @@ class PlainPrinter(_ctx: Context) extends Printer {
         }
       case tp: ExprType =>
         changePrec(GlobalPrec) { "=> " ~ toText(tp.resultType) }
-      case tp: TypeLambda =>
+      case tp: HKTypeLambda =>
+        changePrec(GlobalPrec) {
+          "[" ~ paramsText(tp) ~ "]" ~ lambdaHash(tp) ~ Str(" =>> ") ~ toTextGlobal(tp.resultType)
+        }
+      case tp: PolyType =>
         changePrec(GlobalPrec) {
           "[" ~ paramsText(tp) ~ "]" ~ lambdaHash(tp) ~
           (Str(" => ") provided !tp.resultType.isInstanceOf[MethodType]) ~
@@ -229,11 +235,12 @@ class PlainPrinter(_ctx: Context) extends Printer {
   }.close
 
   def toTextSingleton(tp: SingletonType): Text =
-    toTextLocal(tp.underlying) ~ "(" ~ toTextRef(tp) ~ ")"
+    "(" ~ toTextRef(tp) ~ " : " ~ toTextGlobal(tp.underlying) ~ ")"
 
-  protected def paramsText(tp: LambdaType): Text = {
-    def paramText(name: Name, tp: Type) = toText(name) ~ toTextRHS(tp)
-    Text(tp.paramNames.lazyZip(tp.paramInfos).map(paramText), ", ")
+  protected def paramsText(lam: LambdaType): Text = {
+    def paramText(name: Name, tp: Type) =
+      toText(name) ~ lambdaHash(lam) ~ toTextRHS(tp)
+    Text(lam.paramNames.lazyZip(lam.paramInfos).map(paramText), ", ")
   }
 
   protected def ParamRefNameString(name: Name): String = name.toString
@@ -278,7 +285,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   }
 
   /** The string representation of this type used as a prefix */
-  protected def toTextRef(tp: SingletonType): Text = controlled {
+  def toTextRef(tp: SingletonType): Text = controlled {
     tp match {
       case tp: TermRef =>
         toTextPrefix(tp.prefix) ~ selectionString(tp)
@@ -326,14 +333,39 @@ class PlainPrinter(_ctx: Context) extends Printer {
     case None => "?"
   }
 
+  protected def decomposeLambdas(bounds: TypeBounds): (String, TypeBounds) =
+    def decompose(tp: Type) = tp.stripTypeVar match
+      case lam: HKTypeLambda =>
+        val names =
+          if lam.isDeclaredVarianceLambda then
+            lam.paramNames.lazyZip(lam.declaredVariances).map((name, v) =>
+              varianceSign(v) + name)
+          else lam.paramNames
+        (names.mkString("[", ", ", "]"), lam.resType)
+      case _ =>
+        ("", tp)
+    bounds match
+      case bounds: AliasingBounds =>
+        val (tparamStr, aliasRhs) = decompose(bounds.alias)
+        (tparamStr, bounds.derivedAlias(aliasRhs))
+      case TypeBounds(lo, hi) =>
+        val (_, loRhs) = decompose(lo)
+        val (tparamStr, hiRhs) = decompose(hi)
+        (tparamStr, bounds.derivedTypeBounds(loRhs, hiRhs))
+  end decomposeLambdas
+
   /** String representation of a definition's type following its name */
   protected def toTextRHS(tp: Type): Text = controlled {
     homogenize(tp) match {
-      case tp: AliasingBounds =>
-        " = " ~ toText(tp.alias)
-      case tp @ TypeBounds(lo, hi) =>
-        (if (lo isRef defn.NothingClass) Text() else " >: " ~ toText(lo)) ~
-          (if (hi isRef defn.AnyClass) Text() else " <: " ~ toText(hi))
+      case tp: TypeBounds =>
+        val (tparamStr, rhs) = decomposeLambdas(tp)
+        val binder = rhs match
+          case tp: AliasingBounds =>
+            " = " ~ toText(tp.alias)
+          case TypeBounds(lo, hi) =>
+            (if (lo isRef defn.NothingClass) Text() else " >: " ~ toText(lo))
+            ~ (if hi.isAny then Text() else " <: " ~ toText(hi))
+        tparamStr ~ binder
       case tp @ ClassInfo(pre, cls, cparents, decls, selfInfo) =>
         val preText = toTextLocal(pre)
         val (tparams, otherDecls) = decls.toList partition treatAsTypeParam
@@ -415,15 +447,6 @@ class PlainPrinter(_ctx: Context) extends Printer {
   protected def toTextFlags(sym: Symbol, flags: FlagSet): Text =
     Text(flags.flagStrings(privateWithinString(sym)).map(flag => stringToText(keywordStr(flag))), " ")
 
-  /** String representation of symbol's variance or "" if not applicable */
-  protected def varianceString(sym: Symbol): String = varianceString(sym.variance)
-
-  protected def varianceString(v: Int): String = v match {
-    case -1 => "-"
-    case 1 => "+"
-    case _ => ""
-  }
-
   def annotsText(sym: Symbol): Text = Text(sym.annotations.map(toText))
 
   def dclText(sym: Symbol): Text = dclTextWithInfo(sym, sym.unforcedInfo)
@@ -432,12 +455,13 @@ class PlainPrinter(_ctx: Context) extends Printer {
 
   private def dclTextWithInfo(sym: Symbol, info: Option[Type]): Text =
     (toTextFlags(sym) ~~ keyString(sym) ~~
-      (varianceString(sym) ~ nameString(sym)) ~ toTextRHS(info)).close
+      (varianceSign(sym.variance) ~ nameString(sym)) ~ toTextRHS(info)).close
 
   def toText(sym: Symbol): Text =
     (kindString(sym) ~~ {
       if (sym.isAnonymousClass) toTextParents(sym.info.parents) ~~ "{...}"
       else if (hasMeaninglessName(sym) && !printDebug) simpleNameString(sym.owner) + idString(sym)
+      else if sym.is(Package) then fullNameString(sym)
       else nameString(sym)
     }).close
 
@@ -549,7 +573,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
       case _ => "{...}"
     s"import $exprStr.$selectorStr"
 
-  private[this] var maxSummarized = Int.MaxValue
+  private var maxSummarized = Int.MaxValue
 
   def summarized[T](depth: Int)(op: => T): T = {
     val saved = maxSummarized

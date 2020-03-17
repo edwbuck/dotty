@@ -1,13 +1,9 @@
 import scala.deriving._
-import scala.compiletime.{erasedValue, summonFrom}
-
-inline def summon[T]: T = summonFrom {
-  case t: T => t
-}
+import scala.compiletime.{erasedValue, summonInline}
 
 inline def summonAll[T <: Tuple]: List[Eq[_]] = inline erasedValue[T] match {
   case _: Unit => Nil
-  case _: (t *: ts) => summon[Eq[t]] :: summonAll[ts]
+  case _: (t *: ts) => summonInline[Eq[t]] :: summonAll[ts]
 }
 
 trait Eq[T] {
@@ -40,7 +36,7 @@ object Eq {
         }
     }
 
-  inline given derived[T](given m: Mirror.Of[T]): Eq[T] = {
+  inline given derived[T](using m: Mirror.Of[T]) as Eq[T] = {
     val elemInstances = summonAll[m.MirroredElemTypes]
     inline m match {
       case s: Mirror.SumOf[T]     => eqSum(s, elemInstances)

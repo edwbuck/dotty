@@ -3,8 +3,11 @@ package dotc
 package core
 package tasty
 
-import util.Util.{bestFit, dble}
+import dotty.tools.tasty.util.Util.dble
+import dotty.tools.tasty.TastyBuffer
 import TastyBuffer.{Addr, NoAddr, AddrWidth}
+
+import util.Util.bestFit
 import config.Printers.pickling
 import ast.untpd.Tree
 
@@ -12,10 +15,10 @@ class TreeBuffer extends TastyBuffer(50000) {
 
   private final val ItemsOverOffsets = 2
   private val initialOffsetSize = bytes.length / (AddrWidth * ItemsOverOffsets)
-  private[this] var offsets = new Array[Int](initialOffsetSize)
-  private[this] var isRelative = new Array[Boolean](initialOffsetSize)
-  private[this] var delta: Array[Int] = _
-  private[this] var numOffsets = 0
+  private var offsets = new Array[Int](initialOffsetSize)
+  private var isRelative = new Array[Boolean](initialOffsetSize)
+  private var delta: Array[Int] = _
+  private var numOffsets = 0
 
   /** A map from trees to the address at which a tree is pickled. */
   private val treeAddrs = new java.util.IdentityHashMap[Tree, Any] // really: Addr | Null

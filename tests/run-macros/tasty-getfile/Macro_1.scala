@@ -1,5 +1,5 @@
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift
 
 
 object SourceFiles {
@@ -7,9 +7,9 @@ object SourceFiles {
   implicit inline def getThisFile: String =
     ${getThisFileImpl}
 
-  private def getThisFileImpl(given qctx: QuoteContext): Expr[String] = {
+  private def getThisFileImpl(using qctx: QuoteContext) : Expr[String] = {
     import qctx.tasty._
-    rootContext.source.getFileName.toString
+    summon[Context].source.getFileName.toString
   }
 
 }

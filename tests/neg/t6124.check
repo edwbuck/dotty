@@ -46,14 +46,10 @@
 24 |  val x5 = 0_x52 // error
    |            ^
    |            trailing separator is not allowed
--- Error: tests/neg/t6124.scala:25:13 ----------------------------------------------------------------------------------
-25 |  val x6 = 0x_52 // error
-   |             ^
-   |             leading separator is not allowed
--- Error: tests/neg/t6124.scala:26:14 ----------------------------------------------------------------------------------
+-- Error: tests/neg/t6124.scala:26:13 ----------------------------------------------------------------------------------
 26 |  val x8 = 0x52_ // error
-   |              ^
-   |              trailing separator is not allowed
+   |             ^
+   |             trailing separator is not allowed
 -- Error: tests/neg/t6124.scala:12:17 ----------------------------------------------------------------------------------
 12 |  def tooSmall = 1.0E-325 // error
    |                 ^^^^^^^^

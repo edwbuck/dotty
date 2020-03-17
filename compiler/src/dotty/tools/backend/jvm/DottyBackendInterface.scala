@@ -240,7 +240,11 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   private def emitArgument(av:   AnnotationVisitor,
                            name: String,
                            arg:  Tree, bcodeStore: BCodeHelpers)(innerClasesStore: bcodeStore.BCInnerClassGen): Unit = {
-    (normalizeArgument(arg): @unchecked) match {
+    val narg = normalizeArgument(arg)
+    // Transformation phases are not run on annotation trees, so we need to run
+    // `constToLiteral` at this point.
+    val t = constToLiteral(narg)(ctx.withPhase(ctx.erasurePhase))
+    t match {
       case Literal(const @ Constant(_)) =>
         const.tag match {
           case BooleanTag | ByteTag | ShortTag | CharTag | IntTag | LongTag | FloatTag | DoubleTag => av.visit(name, const.value)
@@ -257,10 +261,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
         av.visit(name, t.args.head.tpe.classSymbol.denot.info.toTypeKind(bcodeStore)(innerClasesStore).toASMType)
       case Ident(nme.WILDCARD) =>
         // An underscore argument indicates that we want to use the default value for this parameter, so do not emit anything
-      case t: tpd.RefTree =>
-        assert(t.symbol.denot.owner.isAllOf(Flags.JavaEnumTrait),
-          i"not an enum: $t / ${t.symbol} / ${t.symbol.denot.owner} / ${t.symbol.denot.owner.isTerm} / ${t.symbol.denot.owner.flagsString}")
-
+      case t: tpd.RefTree if t.symbol.denot.owner.isAllOf(Flags.JavaEnumTrait) =>
         val edesc = innerClasesStore.typeDescriptor(t.tpe.asInstanceOf[bcodeStore.int.Type]) // the class descriptor of the enumeration class.
         val evalue = t.symbol.name.mangledString // value the actual enumeration value.
         av.visitEnum(name, edesc, evalue)
@@ -306,6 +307,9 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
         val desc = innerClasesStore.typeDescriptor(typ.asInstanceOf[bcodeStore.int.Type]) // the class descriptor of the nested annotation class
         val nestedVisitor = av.visitAnnotation(name, desc)
         emitAssocs(nestedVisitor, assocs, bcodeStore)(innerClasesStore)
+
+      case t =>
+        ctx.error(ex"Annotation argument is not a constant", t.sourcePos)
     }
   }
 
@@ -423,10 +427,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
 
   val Flag_SYNTHETIC: Flags = Flags.Synthetic.bits
   val Flag_METHOD: Flags = Flags.Method.bits
-  val ExcludedForwarderFlags: Flags = {
-      Flags.Specialized | Flags.Lifted | Flags.Protected | Flags.JavaStatic |
-      Flags.Private | Flags.Macro
-  }.bits
+  val ExcludedForwarderFlags: Flags = DottyBackendInterface.ExcludedForwarderFlags.bits
 
   def isQualifierSafeToElide(qual: Tree): Boolean = tpd.isIdempotentExpr(qual)
 
@@ -535,8 +536,10 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
 
   private def getGenericSignature(sym: Symbol, owner: Symbol, memberTpe: Type)(implicit ctx: Context): Option[String] =
     if (needsGenericSignature(sym)) {
-      val erasedTypeSym = sym.denot.info.typeSymbol
+      val erasedTypeSym = TypeErasure.fullErasure(sym.denot.info).typeSymbol
       if (erasedTypeSym.isPrimitiveValueClass) {
+        // Suppress signatures for symbols whose types erase in the end to primitive
+        // value types. This is needed to fix #7416.
         None
       } else {
         val jsOpt = GenericSignatures.javaSig(sym, memberTpe)
@@ -624,10 +627,10 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   }
 
   implicit def symHelper(sym: Symbol): SymbolHelper = new SymbolHelper {
+    def exists: Boolean = sym.exists
+
     // names
-    def fullName(sep: Char): String = sym.showFullName
-    def fullName: String = sym.showFullName
-    def simpleName: Name = sym.name
+    def showFullName: String = sym.showFullName
     def javaSimpleName: String = toDenot(sym).name.mangledString // addModuleSuffix(simpleName.dropLocal)
     def javaBinaryName: String = javaClassName.replace('.', '/') // TODO: can we make this a string? addModuleSuffix(fullNameInternal('/'))
     def javaClassName: String = toDenot(sym).fullName.mangledString // addModuleSuffix(fullNameInternal('.')).toString
@@ -675,11 +678,13 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
       isPrivate || (sym.isPrimaryConstructor && sym.owner.isTopLevelModuleClass)
 
     def isFinal: Boolean = sym.is(Flags.Final)
+    def isScalaStatic: Boolean =
+      toDenot(sym).hasAnnotation(ctx.definitions.ScalaStaticAnnot)
     def isStaticMember: Boolean = (sym ne NoSymbol) &&
-      (sym.is(Flags.JavaStatic) || toDenot(sym).hasAnnotation(ctx.definitions.ScalaStaticAnnot))
+      (sym.is(Flags.JavaStatic) || isScalaStatic)
       // guard against no sumbol cause this code is executed to select which call type(static\dynamic) to use to call array.clone
 
-    def isBottomClass: Boolean = (sym ne defn.NullClass) && (sym ne defn.NothingClass)
+    def isBottomClass: Boolean = (sym eq defn.NullClass) || (sym eq defn.NothingClass)
     def isBridge: Boolean = sym.is(Flags.Bridge)
     def isArtifact: Boolean = sym.is(Flags.Artifact)
     def hasEnumFlag: Boolean = sym.isAllOf(Flags.JavaEnumTrait)
@@ -697,6 +702,7 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def isEnum = sym.is(Flags.Enum)
 
     def isClassConstructor: Boolean = toDenot(sym).isClassConstructor
+    def isAnnotation: Boolean = toDenot(sym).isAnnotation
     def isSerializable: Boolean = toDenot(sym).isSerializable
 
     /**
@@ -758,12 +764,14 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
         toDenot(sym)(shiftedContext).lexicallyEnclosingClass(shiftedContext)
       } else NoSymbol
     def nextOverriddenSymbol: Symbol = toDenot(sym).nextOverriddenSymbol
+    def allOverriddenSymbols: List[Symbol] = toDenot(sym).allOverriddenSymbols.toList
 
     // members
     def primaryConstructor: Symbol = toDenot(sym).primaryConstructor
 
     /** For currently compiled classes: All locally defined classes including local classes.
      *  The empty list for classes that are not currently compiled.
+
      */
     def nestedClasses: List[Symbol] = definedClasses(ctx.flattenPhase)
 
@@ -791,8 +799,19 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     }
     def methodSymbols: List[Symbol] =
       for (f <- toDenot(sym).info.decls.toList if f.isMethod && f.isTerm && !f.isModule) yield f
-    def serialVUID: Option[Long] = None
-
+    def serialVUID: Option[Long] =
+      sym.getAnnotation(defn.SerialVersionUIDAnnot).flatMap { annot =>
+        if (sym.is(Flags.Trait)) {
+          ctx.error("@SerialVersionUID does nothing on a trait", annot.tree.sourcePos)
+          None
+        } else {
+          val vuid = annot.argumentConstant(0).map(_.longValue)
+          if (vuid.isEmpty)
+            ctx.error("The argument passed to @SerialVersionUID must be a constant",
+              annot.argument(0).getOrElse(annot.tree).sourcePos)
+          vuid
+        }
+      }
 
     def freshLocal(cunit: CompilationUnit, name: String, tpe: Type, pos: Position, flags: Flags): Symbol = {
       ctx.newSymbol(sym, name.toTermName, termFlagSet(flags), tpe, NoSymbol, pos)
@@ -834,7 +853,8 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def addRemoteRemoteExceptionAnnotation: Unit = ()
 
     def samMethod(): Symbol = ctx.atPhase(ctx.erasurePhase) {
-      toDenot(sym).info.abstractTermMembers.toList match {
+      val samMethods = toDenot(sym).info.possibleSamMethods.toList
+      samMethods match {
         case x :: Nil => x.symbol
         case Nil => abort(s"${sym.show} is not a functional interface. It doesn't have abstract methods")
         case xs => abort(s"${sym.show} is not a functional interface. " +
@@ -862,6 +882,8 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
     def <:<(other: Type): Boolean = tp <:< other
 
     def memberInfo(s: Symbol): Type = tp.memberInfo(s)
+
+    def decl(name: Name): Symbol = tp.decl(name).symbol
 
     def decls: List[Symbol] = tp.decls.toList
 
@@ -1181,4 +1203,11 @@ class DottyBackendInterface(outputDirectory: AbstractFile, val superCallsMap: Ma
   }
 
   def currentUnit: CompilationUnit = ctx.compilationUnit
+}
+
+object DottyBackendInterface {
+  val ExcludedForwarderFlags: Flags.FlagSet = {
+    Flags.Specialized | Flags.Lifted | Flags.Protected | Flags.JavaStatic |
+    Flags.Private | Flags.Macro
+  }
 }

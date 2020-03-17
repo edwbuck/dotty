@@ -22,8 +22,16 @@ trait T {
   val x3 = 52_ // error
 
   val x5 = 0_x52 // error
-  val x6 = 0x_52 // error
+  val x6 = 0x_52
   val x8 = 0x52_ // error
+  val x9 = 0_52
+  val x10 = 052
+  val x11 = 0_0.52
+  val x12 = 00.52
+  val x13 = 00
+  val x14 = 00d
+  val x15 = 00.0
+  val x16 = 0_0
 
   def z = 0
 }

@@ -28,22 +28,19 @@ import scala.quoted._
 
 inline def natConst(x: => Int): Int = ${natConstImpl('{x})}
 
-def natConstImpl(x: Expr[Int])(given qctx: QuoteContext): Expr[Int] = {
+def natConstImpl(x: Expr[Int])(using qctx: QuoteContext): Expr[Int] = {
   import qctx.tasty._
   ...
 }
 ```
 
-### Sealing and Unsealing
+### Extractors
 
-`import qctx.tasty._` will provide an `unseal` extension method on `quoted.Expr`
-and `quoted.Type` which returns a `qctx.tasty.Term` that represents the tree of
-the expression and `qctx.tasty.TypeTree` that represents the tree of the type
-respectively. It will also import all extractors and methods on TASTy Reflect
+`import qctx.tasty._` will provide all extractors and methods on TASTy Reflect
 trees. For example the `Literal(_)` extractor used below.
 
 ```scala
-def natConstImpl(x: Expr[Int])(given qctx: QuoteContext): Expr[Int] = {
+def natConstImpl(x: Expr[Int])(using qctx: QuoteContext): Expr[Int] = {
   import qctx.tasty._
   val xTree: Term = x.unseal
   xTree match {
@@ -64,11 +61,11 @@ def natConstImpl(x: Expr[Int])(given qctx: QuoteContext): Expr[Int] = {
 To easily know which extractors are needed, the `showExtractors` method on a
 `qctx.tasty.Term` returns the string representation of the extractors.
 
-The method `qctx.tasty.Term.seal[T]` provides a way to go back to a
+The method `qctx.tasty.Term.seal` provides a way to go back to a
 `quoted.Expr[Any]`. Note that the type is `Expr[Any]`. Consequently, the type
 must be set explicitly with a checked `cast` call. If the type does not conform
 to it an exception will be thrown. In the code above, we could have replaced
-`n.toExpr` by `xTree.seal.cast[Int]`.
+`Expr(n)` by `xTree.seal.cast[Int]`.
 
 ### Obtaining the underlying argument
 
@@ -80,7 +77,7 @@ operation expression passed while calling the `macro` below.
 ```scala
 inline def macro(param: => Boolean): Unit = ${ macroImpl('param) }
 
-def macroImpl(param: Expr[Boolean])(given qctx: QuoteContext): Expr[Unit] = {
+def macroImpl(param: Expr[Boolean])(using qctx: QuoteContext): Expr[Unit] = {
   import qctx.tasty._
   import util._
 
@@ -119,7 +116,7 @@ def macroImpl()(qctx: QuoteContext): Expr[Unit] = {
 
 ### Tree Utilities
 
-`scala.tasty.reflect.TreeUtils` contains three facilities for tree traversal and
+`scala.tasty.reflect` contains three facilities for tree traversal and
 transformations.
 
 `TreeAccumulator` ties the knot of a traversal. By calling `foldOver(x, tree))`
@@ -144,7 +141,7 @@ but without returning any value. Finally a `TreeMap` performs a transformation.
 
 #### Let
 
-`scala.tasty.reflect.utils.TreeUtils` also offers a method `let` that allows us
+`scala.tasty.Reflection` also offers a method `let` that allows us
 to bind the `rhs` to a `val` and use it in `body`. Additionally, `lets` binds
 the given `terms` to names and use them in the `body`. Their type definitions
 are shown below:

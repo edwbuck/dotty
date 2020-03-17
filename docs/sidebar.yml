@@ -44,13 +44,13 @@ sidebar:
             - title: Overview
               url: docs/reference/contextual/motivation.html
             - title: Given Instances
-              url: docs/reference/contextual/delegates.html
-            - title: Given Clauses
-              url: docs/reference/contextual/given-clauses.html
+              url: docs/reference/contextual/givens.html
+            - title: Using Clauses
+              url: docs/reference/contextual/using-clauses.html
             - title: Context Bounds
               url: docs/reference/contextual/context-bounds.html
             - title: Given Imports
-              url: docs/reference/contextual/import-delegate.html
+              url: docs/reference/contextual/given-imports.html
             - title: Extension Methods
               url: docs/reference/contextual/extension-methods.html
             - title: Implementing Typeclasses
@@ -59,12 +59,12 @@ sidebar:
               url: docs/reference/contextual/derivation.html
             - title: Multiversal Equality
               url: docs/reference/contextual/multiversal-equality.html
-            - title: Implicit Function Types
-              url: docs/reference/contextual/implicit-function-types.html
+            - title: Context Functions
+              url: docs/reference/contextual/context-functions.html
             - title: Implicit Conversions
               url: docs/reference/contextual/conversions.html
-            - title: Implicit By-Name Parameters
-              url: docs/reference/contextual/implicit-by-name-parameters.html
+            - title: By-Name Context Parameters
+              url: docs/reference/contextual/by-name-context-parameters.html
             - title: Relationship with Scala 2 Implicits
               url: docs/reference/contextual/relationship-implicits.html
         - title: Metaprogramming
@@ -77,8 +77,6 @@ sidebar:
               url: docs/reference/metaprogramming/macros.html
             - title: Staging
               url: docs/reference/metaprogramming/staging.html
-            - title: Erased Terms
-              url: docs/reference/metaprogramming/erased-terms.html
             - title: TASTy Reflection
               url: docs/reference/metaprogramming/tasty-reflect.html
             - title: TASTy Inspection
@@ -93,6 +91,8 @@ sidebar:
               url: docs/reference/other-new-features/export.html
             - title: Opaque Type Aliases
               url: docs/reference/other-new-features/opaques.html
+            - title: Open Classes
+              url: docs/reference/other-new-features/open-classes.html
             - title: Parameter Untupling
               url: docs/reference/other-new-features/parameter-untupling.html
             - title: Kind Polymorphism
@@ -103,8 +103,12 @@ sidebar:
               url: docs/reference/other-new-features/threadUnsafe-annotation.html
             - title: New Control Syntax
               url: docs/reference/other-new-features/control-syntax.html
-            - title: Significant Indentation
+            - title: Optional Braces
               url: docs/reference/other-new-features/indentation.html
+            - title: Explicit Nulls
+              url: docs/reference/other-new-features/explicit-nulls.html
+            - title: Safe Initialization
+              url: docs/reference/other-new-features/safe-initialization.html
         - title: Other Changed Features
           subsection:
             - title: Numeric Literals
@@ -125,6 +129,8 @@ sidebar:
               url: docs/reference/changed-features/implicit-conversions.html
             - title: Overload Resolution
               url: docs/reference/changed-features/overload-resolution.html
+            - title: Match Expressions
+              url: docs/reference/changed-features/match-syntax.html
             - title: Vararg Patterns
               url: docs/reference/changed-features/vararg-patterns.html
             - title: Pattern Bindings
@@ -171,6 +177,8 @@ sidebar:
               url: docs/reference/dropped-features/weak-conformance.html
             - title: Nonlocal Returns
               url: docs/reference/dropped-features/nonlocal-returns.html
+            - title: "[this] Qualifier"
+              url: docs/reference/dropped-features/this-qualifier.html
     - title: Contributing
       subsection:
         - title: Contribute Knowledge

@@ -15,7 +15,7 @@ object MessageContainer {
   implicit class MessageContext(val c: Context) extends AnyVal {
     def shouldExplain(cont: MessageContainer): Boolean = {
       implicit val ctx = c
-      cont.contained().explanation match {
+      cont.contained.explanation match {
         case "" => false
         case _ => ctx.settings.explain.value
       }
@@ -29,9 +29,9 @@ class MessageContainer(
   val level: Int
 ) extends Exception with interfaces.Diagnostic {
   import MessageContainer._
-  private[this] var myMsg: String = null
-  private[this] var myIsNonSensical: Boolean = false
-  private[this] var myContained: Message = null
+  private var myMsg: String = null
+  private var myIsNonSensical: Boolean = false
+  private var myContained: Message = null
 
   override def position: Optional[interfaces.SourcePosition] =
     if (pos.exists && pos.source.exists) Optional.of(pos) else Optional.empty()
@@ -39,7 +39,7 @@ class MessageContainer(
   /** The message to report */
   def message: String = {
     if (myMsg == null) {
-      myMsg = contained().msg.replaceAll("\u001B\\[[;\\d]*m", "")
+      myMsg = contained.msg.replaceAll("\u001B\\[[;\\d]*m", "")
       if (myMsg.contains(nonSensicalStartTag)) {
         myIsNonSensical = true
         // myMsg might be composed of several d"..." invocations -> nested
@@ -54,7 +54,7 @@ class MessageContainer(
   }
 
   /** This function forces the contained message and returns it */
-  def contained(): Message = {
+  def contained: Message = {
     if (myContained == null)
       myContained = msgFn
 

@@ -30,7 +30,7 @@ extends Reporter with UniqueMessagePositions with HideNonSensicalMessages with M
   protected final val _consoleReporter = new ConsoleReporter(null, new PrintWriter(_consoleBuf))
   final def consoleOutput: String = _consoleBuf.toString
 
-  private[this] var _didCrash = false
+  private var _didCrash = false
   final def compilerCrashed: Boolean = _didCrash
 
   protected final def inlineInfo(pos: SourcePosition)(implicit ctx: Context): String =
@@ -54,7 +54,7 @@ extends Reporter with UniqueMessagePositions with HideNonSensicalMessages with M
 
   /** Prints the message with the given position indication. */
   def printMessageAndPos(m: MessageContainer, extra: String)(implicit ctx: Context): Unit = {
-    val msg = messageAndPos(m.contained(), m.pos, diagnosticLevel(m))
+    val msg = messageAndPos(m.contained, m.pos, diagnosticLevel(m))
     val extraInfo = inlineInfo(m.pos)
 
     if (m.level >= logLevel) {
@@ -69,7 +69,7 @@ extends Reporter with UniqueMessagePositions with HideNonSensicalMessages with M
   override def doReport(m: MessageContainer)(implicit ctx: Context): Unit = {
 
     // Here we add extra information that we should know about the error message
-    val extra = m.contained() match {
+    val extra = m.contained match {
       case pm: PatternMatchExhaustivity => s": ${pm.uncovered}"
       case _ => ""
     }
@@ -87,10 +87,10 @@ extends Reporter with UniqueMessagePositions with HideNonSensicalMessages with M
 }
 
 object TestReporter {
-  private[this] var outFile: JFile = _
-  private[this] var logWriter: PrintWriter = _
+  private var outFile: JFile = _
+  private var logWriter: PrintWriter = _
 
-  private[this] def initLog() = if (logWriter eq null) {
+  private def initLog() = if (logWriter eq null) {
     val date = new Date
     val df0 = new SimpleDateFormat("yyyy-MM-dd")
     val df1 = new SimpleDateFormat("yyyy-MM-dd-'T'HH-mm-ss")
@@ -127,7 +127,7 @@ object TestReporter {
       /** Prints the message with the given position indication in a simplified manner */
       override def printMessageAndPos(m: MessageContainer, extra: String)(implicit ctx: Context): Unit = {
         def report() = {
-          val msg = s"${m.pos.line + 1}: " + m.contained().kind + extra
+          val msg = s"${m.pos.line + 1}: " + m.contained.kind + extra
           val extraInfo = inlineInfo(m.pos)
 
           writer.println(msg)

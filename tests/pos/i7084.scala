@@ -2,11 +2,11 @@ object Test {
 
   type Foo
 
-  given {
-    def (y: Any) g(given Foo): Any = ???
+  extension on (y: Any) {
+    def g(using Foo): Any = ???
   }
 
-  def f(x: Any)(given Foo): Any = {
+  def f(x: Any)(using Foo): Any = {
     val y = x.g
     y.g
 

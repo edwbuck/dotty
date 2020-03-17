@@ -22,11 +22,11 @@ ambiguities. For instance, you might try to extend `Greeting` twice,
 with different parameters.
 
 ```scala
-/*!*/ class D extends C with Greeting("Bill") // error: parameter passed twice
+class D extends C with Greeting("Bill") // error: parameter passed twice
 ```
 
 Should this print "Bob" or "Bill"? In fact this program is illegal,
-because it violates one of the following rules for trait parameters:
+because it violates the second rule of the following for trait parameters:
 
  1. If a class `C` extends a parameterized trait `T`, and its superclass does not, `C` _must_ pass arguments to `T`.
 
@@ -45,7 +45,7 @@ As is required, no arguments are passed to `Greeting`. However, this poses an is
 when defining a class that extends `FormalGreeting`:
 
 ```scala
-/*!*/ class E extends FormalGreeting // error: missing arguments for `Greeting`.
+class E extends FormalGreeting // error: missing arguments for `Greeting`.
 ```
 
 The correct way to write `E` is to extend both `Greeting` and

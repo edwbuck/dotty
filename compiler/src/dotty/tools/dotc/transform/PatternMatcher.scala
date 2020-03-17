@@ -8,7 +8,7 @@ import collection.mutable
 import Symbols._, Contexts._, Types._, StdNames._, NameOps._
 import ast.Trees._
 import util.Spans._
-import typer.Applications.{isProductMatch, isGetMatch, isProductSeqMatch, productSelectors, productArity}
+import typer.Applications.{isProductMatch, isGetMatch, isProductSeqMatch, productSelectors, productArity, unapplySeqTypeElemTp}
 import SymUtils._
 import Flags._, Constants._
 import Decorators._
@@ -32,14 +32,20 @@ class PatternMatcher extends MiniPhase {
   override def transformMatch(tree: Match)(implicit ctx: Context): Tree =
     if (tree.isInstanceOf[InlineMatch]) tree
     else {
-      val translated = new Translator(tree.tpe, this).translateMatch(tree)
+      // Widen termrefs with underlying `=> T` types. Otherwise ElimByName will produce
+      // inconsistent types. See i7743.scala.
+      // Question: Does this need to be done more systematically, not just for pattern matches?
+      val matchType = tree.tpe.widenSingleton match
+        case ExprType(rt) => rt
+        case rt => tree.tpe
+      val translated = new Translator(matchType, this).translateMatch(tree)
 
       // check exhaustivity and unreachability
       val engine = new patmat.SpaceEngine
       engine.checkExhaustivity(tree)
       engine.checkRedundancy(tree)
 
-      translated.ensureConforms(tree.tpe)
+      translated.ensureConforms(matchType)
     }
 }
 
@@ -129,7 +135,7 @@ object PatternMatcher {
     // ------- Plan and test types ------------------------
 
     /** Counter to display plans nicely, for debugging */
-    private[this] var nxId = 0
+    private var nxId = 0
 
     /** The different kinds of plans */
     sealed abstract class Plan { val id: Int = nxId; nxId += 1 }
@@ -323,9 +329,12 @@ object PatternMatcher {
                 .map(ref(unappResult).select(_))
               matchArgsPlan(selectors, args, onSuccess)
             }
-            else if (isProductSeqMatch(unapp.tpe.widen, args.length, unapp.sourcePos) && isUnapplySeq) {
+            else if (isUnapplySeq && isProductSeqMatch(unapp.tpe.widen, args.length, unapp.sourcePos)) {
               val arity = productArity(unapp.tpe.widen, unapp.sourcePos)
               unapplyProductSeqPlan(unappResult, args, arity)
+            }
+            else if (isUnapplySeq && unapplySeqTypeElemTp(unapp.tpe.widen.finalResultType).exists) {
+              unapplySeqPlan(unappResult, args)
             }
             else {
               assert(isGetMatch(unapp.tpe))

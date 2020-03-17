@@ -40,6 +40,7 @@ class Compiler {
     List(new YCheckPositions) ::    // YCheck positions
     List(new Staging) ::            // Check PCP, heal quoted types and expand macros
     List(new sbt.ExtractDependencies) :: // Sends information on classes' dependencies to sbt via callbacks
+    List(new semanticdb.ExtractSemanticDB) :: // Extract info into .semanticdb files
     List(new PostTyper) ::          // Additional checks and cleanups after type checking
     List(new sbt.ExtractAPI) ::     // Sends a representation of the API of classes to sbt via callbacks
     List(new SetRootTree) ::        // Set the `rootTreeOrProvider` on class symbols
@@ -57,14 +58,15 @@ class Compiler {
          new CheckReentrant,         // Internal use only: Check that compiled program has no data races involving global vars
          new ElimPackagePrefixes,    // Eliminate references to package prefixes in Select nodes
          new CookComments,           // Cook the comments: expand variables, doc, etc.
-         new CompleteJavaEnums) ::   // Fill in constructors for Java enums
-    List(new CheckStatic,            // Check restrictions that apply to @static members
+         new CheckStatic,            // Check restrictions that apply to @static members
+         new BetaReduce,             // Reduce closure applications
+         new init.Checker) ::        // Check initialization of objects
+    List(new CompleteJavaEnums,      // Fill in constructors for Java enums
          new ElimRepeated,           // Rewrite vararg parameters and arguments
          new ExpandSAMs,             // Expand single abstract method closures to anonymous classes
          new ProtectedAccessors,     // Add accessors for protected members
          new ExtensionMethods,       // Expand methods of value classes with extension methods
          new CacheAliasImplicits,    // Cache RHS of parameterless alias implicits
-         new ShortcutImplicits,      // Allow implicit functions without creating closures
          new ByNameClosures,         // Expand arguments to by-name parameters to closures
          new HoistSuperArgs,         // Hoist complex arguments of supercalls to enclosing scope
          new ClassOf,                // Expand `Predef.classOf` calls.
@@ -82,11 +84,13 @@ class Compiler {
          new InterceptedMethods,     // Special handling of `==`, `|=`, `getClass` methods
          new Getters,                // Replace non-private vals and vars with getter defs (fields are added later)
          new ElimByName,             // Expand by-name parameter references
+         new LiftTry,                // Put try expressions that might execute on non-empty stacks into their own methods
          new CollectNullableFields,  // Collect fields that can be nulled out after use in lazy initialization
          new ElimOuterSelect,        // Expand outer selections
          new AugmentScala2Traits,    // Augments Scala2 traits with additional members needed for mixin composition.
          new ResolveSuper,           // Implement super accessors
          new FunctionXXLForwarders,  // Add forwarders for FunctionXXL apply method
+         new ParamForwarding,        // Add forwarders for aliases of superclass parameters
          new TupleOptimizations,     // Optimize generic operations on tuples
          new ArrayConstructors) ::   // Intercept creation of (non-generic) arrays and intrinsify.
     List(new Erasure) ::             // Rewrite types to JVM model, erasing all type parameters, abstract types and refinements.
@@ -104,13 +108,14 @@ class Compiler {
                                         // Note: constructors changes decls in transformTemplate, no InfoTransformers should be added after it
          new FunctionalInterfaces,   // Rewrites closures to implement @specialized types of Functions.
          new Instrumentation,        // Count closure allocations under -Yinstrument-closures
-         new GetClass,               // Rewrites getClass calls on primitive types.
-         new LiftTry) ::             // Put try expressions that might execute on non-empty stacks into their own methods their implementations
+         new GetClass) ::            // Rewrites getClass calls on primitive types.
     List(new LinkScala2Impls,        // Redirect calls to trait methods defined by Scala 2.x, so that they now go to
          new LambdaLift,             // Lifts out nested functions to class scope, storing free variables in environments
-                                        // Note: in this mini-phase block scopes are incorrect. No phases that rely on scopes should be here
-         new ElimStaticThis) ::      // Replace `this` references to static objects by global identifiers
-    List(new Flatten,                // Lift all inner classes to package scope
+                                     // Note: in this mini-phase block scopes are incorrect. No phases that rely on scopes should be here
+         new ElimStaticThis,         // Replace `this` references to static objects by global identifiers
+         new CountOuterAccesses) ::  // Identify outer accessors that can be dropped
+    List(new DropOuterAccessors,     // Drop unused outer accessors
+         new Flatten,                // Lift all inner classes to package scope
          new RenameLifted,           // Renames lifted classes to local numbering scheme
          new TransformWildcards,     // Replace wildcards with default values
          new MoveStatics,            // Move static methods from companion to the class itself

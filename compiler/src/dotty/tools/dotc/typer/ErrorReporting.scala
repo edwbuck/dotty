@@ -55,7 +55,7 @@ object ErrorReporting {
           case _: WildcardType | _: IgnoredProto => ""
           case tp => em" and expected result type $tp"
         }
-        em"arguments (${tp.unforcedTypedArgs.tpes}%, %)$result"
+        em"arguments (${tp.typedArgs().tpes}%, %)$result"
       case _ =>
         em"expected type $tp"
     }
@@ -89,7 +89,6 @@ object ErrorReporting {
       if (tree.tpe.widen.exists)
         i"${exprStr(tree)} does not take ${kind}parameters"
       else {
-        if (ctx.settings.Ydebug.value) new FatalError("").printStackTrace()
         i"undefined: $tree # ${tree.uniqueId}: ${tree.tpe.toString} at ${ctx.phase}"
       }
 
@@ -119,7 +118,7 @@ object ErrorReporting {
       else if (ctx.settings.explainTypes.value)
         i"""
            |${ctx.typerState.constraint}
-           |${TypeComparer.explained((found <:< expected)(_))}"""
+           |${TypeComparer.explained(found <:< expected)}"""
       else
         ""
     }
@@ -151,7 +150,15 @@ object ErrorReporting {
       val expected1 = reported(expected)
       val (found2, expected2) =
         if (found1 frozen_<:< expected1) (found, expected) else (found1, expected1)
-      TypeMismatch(found2, expected2, whyNoMatchStr(found, expected), postScript)
+      val postScript1 =
+        if !postScript.isEmpty
+           || expected.isAny
+           || expected.isAnyRef
+           || expected.isRef(defn.AnyValClass)
+           || defn.isBottomType(found)
+        then postScript
+        else ctx.typer.importSuggestionAddendum(ViewProto(found.widen, expected))
+      TypeMismatch(found2, expected2, whyNoMatchStr(found, expected), postScript1)
     }
 
     /** Format `raw` implicitNotFound or implicitAmbiguous argument, replacing
@@ -160,6 +167,7 @@ object ErrorReporting {
      */
     def userDefinedErrorString(raw: String, paramNames: List[String], args: List[Type]): String = {
       def translate(name: String): Option[String] = {
+        assert(paramNames.length == args.length)
         val idx = paramNames.indexOf(name)
         if (idx >= 0) Some(quoteReplacement(ex"${args(idx)}")) else None
       }
@@ -167,7 +175,7 @@ object ErrorReporting {
     }
 
     def rewriteNotice: String =
-      if (ctx.scala2Mode) "\nThis patch can be inserted automatically under -rewrite."
+      if (ctx.scala2CompatMode) "\nThis patch can be inserted automatically under -rewrite."
       else ""
   }
 

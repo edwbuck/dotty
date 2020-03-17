@@ -66,7 +66,7 @@ class DottyLanguageServer extends LanguageServer
   private[this] var myDependentProjects: mutable.Map[ProjectConfig, mutable.Set[ProjectConfig]] = _
 
   def drivers: Map[ProjectConfig, InteractiveDriver] = thisServer.synchronized {
-    if (myDrivers == null) {
+    if myDrivers == null
       assert(rootUri != null, "`drivers` cannot be called before `initialize`")
       val configFile = new File(new URI(rootUri + '/' + IDE_CONFIG_FILE))
       val configs: List[ProjectConfig] = (new ObjectMapper).readValue(configFile, classOf[Array[ProjectConfig]]).toList
@@ -78,7 +78,7 @@ class DottyLanguageServer extends LanguageServer
         implicit class updateDeco(ss: List[String]) {
           def update(pathKind: String, pathInfo: String) = {
             val idx = ss.indexOf(pathKind)
-            val ss1 = if (idx >= 0) ss.take(idx) ++ ss.drop(idx + 2) else ss
+            val ss1 = if idx >= 0 then ss.take(idx) ++ ss.drop(idx + 2) else ss
             ss1 ++ List(pathKind, pathInfo)
           }
         }
@@ -87,11 +87,9 @@ class DottyLanguageServer extends LanguageServer
           config.compilerArguments.toList
             .update("-d", config.classDirectory.getAbsolutePath)
             .update("-classpath", (config.classDirectory +: config.dependencyClasspath).mkString(File.pathSeparator))
-            .update("-sourcepath", config.sourceDirectories.mkString(File.pathSeparator)) :+
-          "-scansource"
+            .update("-sourcepath", config.sourceDirectories.mkString(File.pathSeparator))
         myDrivers(config) = new InteractiveDriver(settings)
       }
-    }
     myDrivers
   }
 
@@ -105,12 +103,13 @@ class DottyLanguageServer extends LanguageServer
     System.gc()
     for ((_, driver, opened) <- driverConfigs; (uri, source) <- opened)
       driver.run(uri, source)
-    if (Memory.isCritical())
+    if Memory.isCritical()
       println(s"WARNING: Insufficient memory to run Scala language server on these projects.")
   }
 
   private def checkMemory() =
-    if (Memory.isCritical()) CompletableFutures.computeAsync { _ => restart() }
+    if Memory.isCritical()
+      CompletableFutures.computeAsync { _ => restart() }
 
   /** The configuration of the project that owns `uri`. */
   def configFor(uri: URI): ProjectConfig = thisServer.synchronized {
@@ -138,7 +137,7 @@ class DottyLanguageServer extends LanguageServer
     implicit class updateDeco(ss: List[String]) {
       def update(pathKind: String, pathInfo: String) = {
         val idx = ss.indexOf(pathKind)
-        val ss1 = if (idx >= 0) ss.take(idx) ++ ss.drop(idx + 2) else ss
+        val ss1 = if idx >= 0 then ss.take(idx) ++ ss.drop(idx + 2) else ss
         ss1 ++ List(pathKind, pathInfo)
       }
     }
@@ -151,7 +150,7 @@ class DottyLanguageServer extends LanguageServer
 
   /** A mapping from project `p` to the set of projects that transitively depend on `p`. */
   def dependentProjects: Map[ProjectConfig, Set[ProjectConfig]] = thisServer.synchronized {
-    if (myDependentProjects == null) {
+    if myDependentProjects == null
       val idToConfig = drivers.keys.map(k => k.id -> k).toMap
       val allProjects = drivers.keySet
 
@@ -165,7 +164,6 @@ class DottyLanguageServer extends LanguageServer
             dependency <- transitiveDependencies(project) } {
         myDependentProjects(dependency) += project
       }
-    }
     myDependentProjects
   }
 
@@ -195,7 +193,7 @@ class DottyLanguageServer extends LanguageServer
             throw ex
         }
       }
-      if (synchronize)
+      if synchronize
         thisServer.synchronized { computation() }
       else
         computation()
@@ -490,10 +488,20 @@ class DottyLanguageServer extends LanguageServer
 
     val uriTrees = driver.openedTrees(uri)
 
-    val defs = Interactive.namedTrees(uriTrees, Include.empty)
+    // Excludes type and term params from synthetic symbols
+    val excludeParamsFromSyntheticSymbols = (n: NameTree) => {
+      val owner = n.symbol.owner
+      !n.symbol.is(Param) || {
+        !owner.is(Synthetic) &&
+        !owner.isPrimaryConstructor
+      }
+    }
+
+    val defs = Interactive.namedTrees(uriTrees, Include.local, excludeParamsFromSyntheticSymbols)
+
     (for {
-      d <- defs if !isWorksheetWrapper(d)
-      info <- symbolInfo(d.tree.symbol, d.namePos)
+      d <- defs if (!isWorksheetWrapper(d) && !isTopLevelWrapper(d))
+      info <- symbolInfo(d.tree.symbol, d.pos)
     } yield JEither.forLeft(info)).asJava
   }
 
@@ -701,7 +709,7 @@ object DottyLanguageServer {
         }
       }
 
-      val message = mc.contained()
+      val message = mc.contained
       if (displayMessage(message, mc.pos.source)) {
         val code = message.errorId.errorNumber.toString
         range(mc.pos).map(r =>
@@ -809,20 +817,28 @@ object DottyLanguageServer {
       symbol.owner == ctx.definitions.EmptyPackageClass
   }
 
+  /**
+   * Is this symbol the wrapper object for top level definitions?
+   */
+  def isTopLevelWrapper(sourceTree: SourceTree)(implicit ctx: Context): Boolean = {
+    val symbol = sourceTree.tree.symbol
+    symbol.isPackageObject
+  }
+
   /** Create an lsp4j.CompletionItem from a completion result */
   def completionItem(completion: Completion)(implicit ctx: Context): lsp4j.CompletionItem = {
     def completionItemKind(sym: Symbol)(implicit ctx: Context): lsp4j.CompletionItemKind = {
       import lsp4j.{CompletionItemKind => CIK}
 
-      if (sym.is(Package) || sym.is(Module))
+      if sym.is(Package) || sym.is(Module)
         CIK.Module // No CompletionItemKind.Package (https://github.com/Microsoft/language-server-protocol/issues/155)
-      else if (sym.isConstructor)
+      else if sym.isConstructor
         CIK.Constructor
-      else if (sym.isClass)
+      else if sym.isClass
         CIK.Class
-      else if (sym.is(Mutable))
+      else if sym.is(Mutable)
         CIK.Variable
-      else if (sym.is(Method))
+      else if sym.is(Method)
         CIK.Method
       else
         CIK.Field
@@ -846,7 +862,8 @@ object DottyLanguageServer {
   }
 
   def markupContent(content: String): lsp4j.MarkupContent = {
-    if (content.isEmpty) null
+    if content.isEmpty
+      null
     else {
       val markup = new lsp4j.MarkupContent
       markup.setKind("markdown")
@@ -883,24 +900,34 @@ object DottyLanguageServer {
         SK.Constructor
       else if (sym.is(Module))
         SK.Module
+      else if (sym.isAllOf(EnumCase) || sym.isAllOf(EnumValue))
+        SK.EnumMember
+      else if (sym.is(Enum))
+        SK.Enum
+      else if (sym.is(Trait))
+        SK.Interface
       else if (sym.isClass)
         SK.Class
       else if (sym.is(Mutable))
         SK.Variable
       else if (sym.is(Method))
         SK.Method
+      else if (sym.is(TypeParam) || sym.isAbstractOrAliasType)
+        SK.TypeParameter
       else
         SK.Field
     }
+    def containerName(sym: Symbol): String = {
+      val owner = if (sym.owner.exists && sym.owner.isPackageObject) sym.owner.owner else sym.owner
+      if (owner.exists && !owner.isEmptyPackage) {
+          owner.name.stripModuleClassSuffix.show
+      } else
+        null
+    }
 
     val name = sym.name.stripModuleClassSuffix.show
-    val containerName =
-      if (sym.owner.exists && !sym.owner.isEmptyPackage)
-        sym.owner.name.show
-      else
-        null
 
-    location(pos).map(l => new lsp4j.SymbolInformation(name, symbolKind(sym), l, containerName))
+    location(pos).map(l => new lsp4j.SymbolInformation(name, symbolKind(sym), l, containerName(sym)))
   }
 
   /** Convert `signature` to a `SignatureInformation` */

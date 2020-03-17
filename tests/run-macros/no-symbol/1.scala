@@ -5,15 +5,14 @@ case class Foo(i: Int)
 case class Box[A](x: A)
 
 object Macro {
-  inline def foo[T](implicit inline t: Type[T]): String =
-    ${ fooImpl }
+  inline def foo[T]: String =
+    ${ fooImpl[T] }
 
-  def fooImpl[T](implicit t: Type[T], q: QuoteContext): Expr[String] = {
-    import q.tasty._
-    t.unseal.symbol match {
-      case IsClassDefSymbol(self) => '{ "symbol" }
-      case NoSymbol() => '{ "no symbol" }
-      case _ => '{ "match error" }
-    }
+  def fooImpl[T](implicit t: Type[T], qctx: QuoteContext): Expr[String] = {
+    import qctx.tasty._
+    val sym = t.unseal.symbol
+    if sym.isClassDef then '{ "symbol" }
+    else if sym.isNoSymbol then '{ "no symbol" }
+    else  '{ "match error" }
   }
 }

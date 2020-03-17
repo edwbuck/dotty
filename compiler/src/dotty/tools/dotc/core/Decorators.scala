@@ -114,6 +114,22 @@ object Decorators {
         else x1 :: xs1
       }
 
+    /** Like `xs.lazyZip(xs.indices).map(f)`, but returns list `xs` itself
+     *  - instead of a copy - if function `f` maps all elements of
+     *  `xs` to themselves.
+     */
+    def mapWithIndexConserve[U <: T](f: (T, Int) => U): List[U] =
+      def recur(xs: List[T], idx: Int): List[U] =
+        if xs.isEmpty then Nil
+        else
+          val x1 = f(xs.head, idx)
+          val xs1 = recur(xs.tail, idx + 1)
+          if (x1.asInstanceOf[AnyRef] eq xs.head.asInstanceOf[AnyRef])
+             && (xs1 eq xs.tail)
+          then xs.asInstanceOf[List[U]]
+          else x1 :: xs1
+      recur(xs, 0)
+
     final def hasSameLengthAs[U](ys: List[U]): Boolean = {
       @tailrec def loop(xs: List[T], ys: List[U]): Boolean =
         if (xs.isEmpty) ys.isEmpty
@@ -170,11 +186,11 @@ object Decorators {
       }
   }
 
-  implicit object reportDeco {
-    def (x: T) reporting[T](
-        op: ImplicitFunction1[WrappedResult[T], String],
+  implicit class reportDeco[T](x: T) extends AnyVal {
+    def reporting(
+        op: WrappedResult[T] ?=> String,
         printer: config.Printers.Printer = config.Printers.default): T = {
-      printer.println(op(given WrappedResult(x)))
+      printer.println(op(using WrappedResult(x)))
       x
     }
   }

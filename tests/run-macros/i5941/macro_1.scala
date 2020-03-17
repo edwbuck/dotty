@@ -11,7 +11,7 @@ object Lens {
     def set(t: T, s: S): S = _set(t)(s)
   }
 
-  def impl[S: Type, T: Type](getter: Expr[S => T])(given qctx: QuoteContext): Expr[Lens[S, T]] = {
+  def impl[S: Type, T: Type](getter: Expr[S => T])(using qctx: QuoteContext) : Expr[Lens[S, T]] = {
     import qctx.tasty._
     import util._
 
@@ -69,7 +69,7 @@ object GenLens {
 
   def apply[S] = new MkGenLens[S]
   class MkGenLens[S] {
-    inline def apply[T](get: => (S => T)): Lens[S, T] = ${ Lens.impl('get) }
+    inline def apply[T](inline get: (S => T)): Lens[S, T] = ${ Lens.impl('get) }
   }
 }
 
@@ -84,7 +84,7 @@ object Iso {
     def to(s: S): A = _to(s)
   }
 
-  def impl[S: Type, A: Type](given qctx: QuoteContext): Expr[Iso[S, A]] = {
+  def impl[S: Type, A: Type](using qctx: QuoteContext) : Expr[Iso[S, A]] = {
     import qctx.tasty._
     import util._
 
@@ -102,7 +102,7 @@ object Iso {
     val cls = tpS.classSymbol.get
 
     val companion = tpS match {
-      case Type.TypeRef(prefix, name) => Type.TermRef(prefix, name)
+      case TypeRef(prefix, name) => TermRef(prefix, name)
     }
 
     if (cls.caseFields.size != 1) {
@@ -123,7 +123,7 @@ object Iso {
     }
   }
 
-  def implUnit[S: Type](given qctx: QuoteContext): Expr[Iso[S, 1]] = {
+  def implUnit[S: Type](using qctx: QuoteContext) : Expr[Iso[S, 1]] = {
     import qctx.tasty._
     import util._
 
@@ -144,7 +144,7 @@ object Iso {
       }
 
       val companion = tpS match {
-        case Type.TypeRef(prefix, name) => Type.TermRef(prefix, name)
+        case TypeRef(prefix, name) => TermRef(prefix, name)
       }
 
       val obj = Select.overloaded(Ident(companion), "apply", Nil, Nil).seal.cast[S]
@@ -160,7 +160,7 @@ object Iso {
   }
 
   // TODO: require whitebox macro
-  def implFields[S: Type](given qctx: QuoteContext): Expr[Iso[S, Any]] = ???
+  def implFields[S: Type](using qctx: QuoteContext) : Expr[Iso[S, Any]] = ???
 }
 
 object GenIso {
@@ -195,7 +195,7 @@ object Prism {
     def apply(a: A): S = app(a)
   }
 
-  def impl[S: Type, A <: S : Type](given qctx: QuoteContext): Expr[Prism[S, A]] = {
+  def impl[S: Type, A <: S : Type](using qctx: QuoteContext) : Expr[Prism[S, A]] = {
     import qctx.tasty._
     import util._
 

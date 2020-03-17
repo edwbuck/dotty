@@ -1,7 +1,6 @@
 import scala.quoted._
 
-object Test {
-  given QuoteContext = ???
+class Test(using QuoteContext) {
 
   '{ ${implicitly[Liftable[Int]].toExpr(1)} }
 
@@ -10,7 +9,7 @@ object Test {
 
     '{ ${summon[Liftable[Int]].toExpr(1)} }
 
-    '{ ${1.toExpr} }
+    '{ ${Expr(1)} }
 
   }
 

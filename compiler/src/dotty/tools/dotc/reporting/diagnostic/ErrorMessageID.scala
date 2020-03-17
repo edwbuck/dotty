@@ -51,7 +51,7 @@ enum ErrorMessageID extends java.lang.Enum[ErrorMessageID] {
     ExpectedTokenButFoundID,
     MixedLeftAndRightAssociativeOpsID,
     CantInstantiateAbstractClassOrTraitID,
-    DUMMY_AVAILABLE_1,
+    UnreducibleApplicationID,
     OverloadedOrRecursiveMethodNeedsResultTypeID,
     RecursiveValueNeedsResultTypeID,
     CyclicReferenceInvolvingID,
@@ -91,7 +91,7 @@ enum ErrorMessageID extends java.lang.Enum[ErrorMessageID] {
     ExpectedTopLevelDefID,
     AnonymousFunctionMissingParamTypeID,
     SuperCallsNotAllowedInlineableID,
-    ModifiersNotAllowedID,
+    UNUSED1,  // not used anymore, but left so that error numbers stay the same
     WildcardOnTypeArgumentNotAllowedOnNewID,
     FunctionTypeNeedsNonEmptyParameterListID,
     WrongNumberOfParametersID,
@@ -145,7 +145,26 @@ enum ErrorMessageID extends java.lang.Enum[ErrorMessageID] {
     NoMatchingOverloadID,
     StableIdentPatternID,
     StaticFieldsShouldPrecedeNonStaticID,
-    IllegalSuperAccessorID
+    IllegalSuperAccessorID,
+    TraitParameterUsedAsParentPrefixID,
+    UnknownNamedEnclosingClassOrObjectID,
+    IllegalCyclicTypeReferenceID,
+    MissingTypeParameterInTypeAppID,
+    UNUSED_ImplicitTypesCanOnlyBeFunctionTypesID,
+    ErasedTypesCanOnlyBeFunctionTypesID,
+    CaseClassMissingNonImplicitParamListID,
+    EnumerationsShouldNotBeEmptyID,
+    AbstractCannotBeUsedForObjectsID,
+    ModifierRedundantForObjectsID,
+    TypedCaseDoesNotExplicitlyExtendTypedEnumID,
+    IllegalRedefinitionOfStandardKindID,
+    NoExtensionMethodAllowedID,
+    ExtensionMethodCannotHaveTypeParamsID,
+    ExtensionCanOnlyHaveDefsID,
+    UnexpectedPatternForSummonFromID,
+    AnonymousInstanceCannotBeEmptyID,
+    TypeSpliceInValPatternID,
+    ModifierNotAllowedForDefinitionID
 
   def errorNumber = ordinal - 2
 }

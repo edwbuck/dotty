@@ -10,12 +10,23 @@ package object matching {
    *  @param tpe quoted type of the implicit parameter
    *  @param qctx current context
    */
-  def searchImplicitExpr[T](given tpe: Type[T], qctx: QuoteContext): Option[Expr[T]] = {
-    import qctx.tasty._
-    searchImplicit(tpe.unseal.tpe) match {
-      case IsImplicitSearchSuccess(iss) => Some(iss.tree.seal.asInstanceOf[Expr[T]])
-      case IsImplicitSearchFailure(isf) => None
-    }
-  }
+  @deprecated("use scala.quoted.Expr.summon[T] instead", "0.23.0")
+  def summonExpr[T](using tpe: Type[T])(using qctx: QuoteContext): Option[Expr[T]] =
+    Expr.summon[T]
+
+  @deprecated("use scala.quoted.Const instead", "0.23.0")
+  val Const: quoted.Const.type = quoted.Const
+
+  @deprecated("use scala.quoted.Varargs instead", "0.23.0")
+  val ExprSeq: quoted.Varargs.type = quoted.Varargs
+
+  @deprecated("use scala.quoted.Lambda instead", "0.23.0")
+  val Lambda: quoted.Lambda.type = quoted.Lambda
+
+  @deprecated("use scala.quoted.Unlifted instead", "0.23.0")
+  val Value: quoted.Unlifted.type = quoted.Unlifted
+
+  @deprecated("use scala.quoted.Unlifted instead", "0.23.0")
+  val ValueOfExpr: quoted.Unlifted.type = quoted.Unlifted
 
 }

@@ -43,11 +43,20 @@ object Inferencing {
     if (isFullyDefined(tp, ForceDegree.all)) tp
     else throw new Error(i"internal error: type of $what $tp is not fully defined, pos = $span") // !!! DEBUG
 
-
-  /** Instantiate selected type variables `tvars` in type `tp` */
+  /** Instantiate selected type variables `tvars` in type `tp` in a special mode:
+   *   1. If a type variable is constrained from below (i.e. constraint bound != given lower bound)
+   *      it is minimized.
+   *   2. Otherwise, if the type variable is constrained from above, it is maximized.
+   *   3. Otherwise, if the type variable has a lower bound != Nothing, it is minimized.
+   *   4. Otherwise, if the type variable has an upper bound != Any, it is maximized.
+   *  If none of (1) - (4) applies, the type variable is left uninstantiated.
+   *  The method is called to instantiate type variables before an implicit search.
+   */
   def instantiateSelected(tp: Type, tvars: List[Type])(implicit ctx: Context): Unit =
     if (tvars.nonEmpty)
-      new IsFullyDefinedAccumulator(new ForceDegree.Value(tvars.contains, minimizeAll = true)).process(tp)
+      IsFullyDefinedAccumulator(
+        ForceDegree.Value(tvars.contains, IfBottom.flip), minimizeSelected = true
+      ).process(tp)
 
   /** Instantiate any type variables in `tp` whose bounds contain a reference to
    *  one of the parameters in `tparams` or `vparamss`.
@@ -79,19 +88,27 @@ object Inferencing {
    *   2. T is maximized if the constraint over T is only from above (i.e.
    *      constrained upper bound != given upper bound and
    *      constrained lower bound == given lower bound).
-   *  If (1) and (2) do not apply:
-   *   3. T is minimized if forceDegree is minimizeAll.
-   *   4. Otherwise, T is maximized if it appears only contravariantly in the given type,
-   *      or if forceDegree is `noBottom` and T's minimized value is a bottom type.
-   *   5. Otherwise, T is minimized.
    *
-   *  The instantiation is done in two phases:
+   *  If (1) and (2) do not apply, and minimizeSelected is set:
+   *   3. T is minimized if it has a lower bound (different from Nothing) in the
+   *      current constraint (the bound might come from T's declaration).
+   *   4. Otherwise, T is maximized if it has an upper bound (different from Any)
+   *      in the currented constraint (the bound might come from T's declaration).
+   *   5. Otherwise, T is not instantiated at all.
+
+   *  If (1) and (2) do not apply, and minimizeSelected is not set:
+   *   6: T is maximized if it appears only contravariantly in the given type,
+   *      or if forceDegree is `flipBottom` and T has no lower bound different from Nothing.
+   *   7. Otherwise, T is minimized.
+   *
+   *  The instantiation for (6) and (7) is done in two phases:
    *  1st Phase: Try to instantiate minimizable type variables to
    *  their lower bound. Record whether successful.
    *  2nd Phase: If first phase was successful, instantiate all remaining type variables
    *  to their upper bound.
    */
-  private class IsFullyDefinedAccumulator(force: ForceDegree.Value)(implicit ctx: Context) extends TypeAccumulator[Boolean] {
+  private class IsFullyDefinedAccumulator(force: ForceDegree.Value, minimizeSelected: Boolean = false)
+    (implicit ctx: Context) extends TypeAccumulator[Boolean] {
 
     private def instantiate(tvar: TypeVar, fromBelow: Boolean): Type = {
       val inst = tvar.instantiate(fromBelow)
@@ -99,44 +116,50 @@ object Inferencing {
       inst
     }
 
-    private[this] var toMaximize: Boolean = false
+    private var toMaximize: List[TypeVar] = Nil
 
     def apply(x: Boolean, tp: Type): Boolean = tp.dealias match {
       case _: WildcardType | _: ProtoType =>
         false
-      case tvar: TypeVar
-      if !tvar.isInstantiated && ctx.typerState.constraint.contains(tvar) =>
-        force.appliesTo(tvar) && {
+      case tvar: TypeVar if !tvar.isInstantiated =>
+        force.appliesTo(tvar)
+        && ctx.typerState.constraint.contains(tvar)
+        && {
           val direction = instDirection(tvar.origin)
-          def avoidBottom =
-            !force.allowBottom &&
-            defn.isBottomType(ctx.typeComparer.approximation(tvar.origin, fromBelow = true))
-          def preferMin = force.minimizeAll || variance >= 0 && !avoidBottom
-          if (direction != 0) instantiate(tvar, direction < 0)
-          else if (preferMin) instantiate(tvar, fromBelow = true)
-          else toMaximize = true
+          if direction != 0 then
+            instantiate(tvar, fromBelow = direction < 0)
+          else if minimizeSelected then
+            if tvar.hasLowerBound then instantiate(tvar, fromBelow = true)
+            else if tvar.hasUpperBound then instantiate(tvar, fromBelow = false)
+            else () // hold off instantiating unbounded unconstrained variables
+          else if variance >= 0 && (force.ifBottom == IfBottom.ok || tvar.hasLowerBound) then
+            instantiate(tvar, fromBelow = true)
+          else if variance >= 0 && force.ifBottom == IfBottom.fail then
+            return false
+          else
+            toMaximize = tvar :: toMaximize
           foldOver(x, tvar)
         }
       case tp =>
         foldOver(x, tp)
     }
 
-    private class UpperInstantiator(implicit ctx: Context) extends TypeAccumulator[Unit] {
-      def apply(x: Unit, tp: Type): Unit = {
-        tp match {
-          case tvar: TypeVar if !tvar.isInstantiated =>
+    def process(tp: Type): Boolean =
+      // Maximize type vars in the order they were visited before */
+      def maximize(tvars: List[TypeVar]): Unit = tvars match
+        case tvar :: tvars1 =>
+          maximize(tvars1)
+          if !tvar.isInstantiated then
             instantiate(tvar, fromBelow = false)
-          case _ =>
-        }
-        foldOver(x, tp)
-      }
-    }
-
-    def process(tp: Type): Boolean = {
-      val res = apply(true, tp)
-      if (res && toMaximize) new UpperInstantiator().apply((), tp)
-      res
-    }
+        case nil =>
+      apply(true, tp)
+      && (
+        toMaximize.isEmpty
+        || { maximize(toMaximize)
+             toMaximize = Nil       // Do another round since the maximixing instances
+             process(tp)            // might have type uninstantiated variables themselves.
+           }
+      )
   }
 
   /** For all type parameters occurring in `tp`:
@@ -389,7 +412,7 @@ trait Inferencing { this: Typer =>
     if ((ownedVars ne locked) && !ownedVars.isEmpty) {
       val qualifying = ownedVars -- locked
       if (!qualifying.isEmpty) {
-        typr.println(i"interpolate $tree: ${tree.tpe.widen} in $state, owned vars = ${state.ownedVars.toList}%, %, previous = ${locked.toList}%, % / ${state.constraint}")
+        typr.println(i"interpolate $tree: ${tree.tpe.widen} in $state, owned vars = ${state.ownedVars.toList}%, %, qualifying = ${qualifying.toList}%, %, previous = ${locked.toList}%, % / ${state.constraint}")
         val resultAlreadyConstrained =
           tree.isInstanceOf[Apply] || tree.tpe.isInstanceOf[MethodOrPoly]
         if (!resultAlreadyConstrained)
@@ -421,22 +444,70 @@ trait Inferencing { this: Typer =>
         //     val y: List[List[String]] = List(List(1))
         val hasUnreportedErrors = state.reporter.hasUnreportedErrors
         def constraint = state.constraint
+        type InstantiateQueue = mutable.ListBuffer[(TypeVar, Boolean)]
+        val toInstantiate = new InstantiateQueue
         for (tvar <- qualifying)
-          if (!tvar.isInstantiated && state.constraint.contains(tvar)) {
+          if (!tvar.isInstantiated && constraint.contains(tvar)) {
             // Needs to be checked again, since previous interpolations could already have
             // instantiated `tvar` through unification.
             val v = vs(tvar)
             if (v == null) {
               typr.println(i"interpolate non-occurring $tvar in $state in $tree: $tp, fromBelow = ${tvar.hasLowerBound}, $constraint")
-              tvar.instantiate(fromBelow = tvar.hasLowerBound)
+              toInstantiate += ((tvar, tvar.hasLowerBound))
             }
             else if (!hasUnreportedErrors)
               if (v.intValue != 0) {
                 typr.println(i"interpolate $tvar in $state in $tree: $tp, fromBelow = ${v.intValue == 1}, $constraint")
-                tvar.instantiate(fromBelow = v.intValue == 1)
+                toInstantiate += ((tvar, v.intValue == 1))
               }
               else typr.println(i"no interpolation for nonvariant $tvar in $state")
           }
+
+        /** Instantiate all type variables in `buf` in the indicated directions.
+         *  If a type variable A is instantiated from below, and there is another
+         *  type variable B in `buf` that is known to be smaller than A, wait and
+         *  instantiate all other type variables before trying to instantiate A again.
+         *  Dually, wait instantiating a type variable from above as long as it has
+         *  upper bounds in `buf`.
+         *
+         *  This is done to avoid loss of precision when forming unions. An example
+         *  is in i7558.scala:
+         *
+         *      type Tr[+V1, +O1 <: V1]
+         *      def [V2, O2 <: V2](tr: Tr[V2, O2]) sl: Tr[V2, O2] = ???
+         *      def as[V3, O3 <: V3](tr: Tr[V3, O3]) : Tr[V3, O3] = tr.sl
+         *
+         *   Here we interpolate at some point V2 and O2 given the constraint
+         *
+         *      V2 >: V3, O2 >: O3, O2 <: V2
+         *
+         *   where O3 and V3 are type refs with O3 <: V3.
+         *   If we interpolate V2 first to V3 | O2, the widenUnion algorithm will
+         *   instantiate O2 to V3, leading to the final constraint
+         *
+         *      V2 := V3, O2 := V3
+         *
+         *   But if we instantiate O2 first to O3, and V2 next to V3, we get the
+         *   more flexible instantiation
+         *
+         *      V2 := V3, O2 := O3
+         */
+        def doInstantiate(buf: InstantiateQueue): Unit =
+          if buf.nonEmpty then
+            val suspended = new InstantiateQueue
+            while buf.nonEmpty do
+              val first @ (tvar, fromBelow) = buf.head
+              buf.dropInPlace(1)
+              val suspend = buf.exists{ (following, _) =>
+                if fromBelow then
+                  constraint.isLess(following.origin, tvar.origin)
+                else
+                  constraint.isLess(tvar.origin, following.origin)
+              }
+              if suspend then suspended += first else tvar.instantiate(fromBelow)
+            doInstantiate(suspended)
+        end doInstantiate
+        doInstantiate(toInstantiate)
       }
     }
     tree
@@ -445,9 +516,13 @@ trait Inferencing { this: Typer =>
 
 /** An enumeration controlling the degree of forcing in "is-dully-defined" checks. */
 @sharable object ForceDegree {
-  class Value(val appliesTo: TypeVar => Boolean, val minimizeAll: Boolean, val allowBottom: Boolean = true)
-  val none: Value = new Value(_ => false, minimizeAll = false)
-  val all: Value = new Value(_ => true, minimizeAll = false)
-  val noBottom: Value = new Value(_ => true, minimizeAll = false, allowBottom = false)
+  class Value(val appliesTo: TypeVar => Boolean, val ifBottom: IfBottom)
+  val none: Value = new Value(_ => false, IfBottom.ok)
+  val all: Value = new Value(_ => true, IfBottom.ok)
+  val failBottom: Value = new Value(_ => true, IfBottom.fail)
+  val flipBottom: Value = new Value(_ => true, IfBottom.flip)
 }
+
+enum IfBottom:
+  case ok, fail, flip
 

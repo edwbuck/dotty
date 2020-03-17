@@ -18,12 +18,13 @@ import Names.{Name, TermName}
 import NameKinds.{InlineAccessorName, InlineBinderName, InlineScrutineeName}
 import ProtoTypes.selectionProto
 import SymDenotations.SymDenotation
-import Inferencing.fullyDefinedType
+import Inferencing.isFullyDefined
 import config.Printers.inlining
 import ErrorReporting.errorTree
 import dotty.tools.dotc.tastyreflect.ReflectionImpl
 import dotty.tools.dotc.util.{SimpleIdentityMap, SimpleIdentitySet, SourceFile, SourcePosition}
 import dotty.tools.dotc.parsing.Parsers.Parser
+import Nullables.{given _}
 
 import collection.mutable
 import reporting.trace
@@ -33,15 +34,12 @@ import dotty.tools.dotc.transform.{Splicer, TreeMapWithStages}
 object Inliner {
   import tpd._
 
-  /** `sym` is an inline method with a known body to inline (note: definitions coming
-   *  from Scala2x class files might be `@forceInline`, but still lack that body).
+  /** `sym` is an inline method with a known body to inline.
    */
   def hasBodyToInline(sym: SymDenotation)(implicit ctx: Context): Boolean =
     sym.isInlineMethod && sym.hasAnnotation(defn.BodyAnnot)
 
   /** The body to inline for method `sym`, or `EmptyTree` if none exists.
-   *  Note: definitions coming from Scala2x class files might be `@forceInline`,
-   *  but still lack that body.
    *  @pre  hasBodyToInline(sym)
    */
   def bodyToInline(sym: SymDenotation)(implicit ctx: Context): Tree =
@@ -52,7 +50,7 @@ object Inliner {
 
   /** Should call to method `meth` be inlined in this context? */
   def isInlineable(meth: Symbol)(implicit ctx: Context): Boolean =
-    meth.is(Inline) && !ctx.inInlineMethod && !bodyToInline(meth).isEmpty
+    meth.is(Inline) && meth.hasAnnotation(defn.BodyAnnot) && !ctx.inInlineMethod
 
   /** Should call be inlined in this context? */
   def isInlineable(tree: Tree)(implicit ctx: Context): Boolean = tree match {
@@ -69,7 +67,9 @@ object Inliner {
    *            and body that replace it.
    */
   def inlineCall(tree: Tree)(implicit ctx: Context): Tree = {
-    if (tree.symbol == defn.CompiletimeTesting_typeChecks) return Intrinsics.typeChecks(tree)
+    if tree.symbol.denot != SymDenotations.NoDenotation && tree.symbol.owner.companionModule == defn.CompiletimeTestingPackageObject
+      if (tree.symbol == defn.CompiletimeTesting_typeChecks) return Intrinsics.typeChecks(tree)
+      if (tree.symbol == defn.CompiletimeTesting_typeCheckErrors) return Intrinsics.typeCheckErrors(tree)
 
    /** Set the position of all trees logically contained in the expansion of
     *  inlined call `call` to the position of `call`. This transform is necessary
@@ -196,33 +196,64 @@ object Inliner {
   }
 
   object Intrinsics {
+    import dotty.tools.dotc.reporting.diagnostic.messages.Error
+    private enum ErrorKind:
+      case Parser, Typer
+
+    private def compileForErrors(tree: Tree, stopAfterParser: Boolean)(using ctx: Context): List[(ErrorKind, Error)] =
+      assert(tree.symbol == defn.CompiletimeTesting_typeChecks || tree.symbol == defn.CompiletimeTesting_typeCheckErrors)
+      def stripTyped(t: Tree): Tree = t match {
+        case Typed(t2, _) => stripTyped(t2)
+        case _ => t
+      }
+
+      val Apply(_, codeArg :: Nil) = tree
+      val underlyingCodeArg = stripTyped(codeArg.underlying)
+      ConstFold(underlyingCodeArg).tpe.widenTermRefExpr match {
+        case ConstantType(Constant(code: String)) =>
+          val source2 = SourceFile.virtual("tasty-reflect", code)
+          val ctx2 = ctx.fresh.setNewTyperState().setTyper(new Typer).setSource(source2)
+          val tree2 = new Parser(source2)(ctx2).block()
+          val res = collection.mutable.ListBuffer.empty[(ErrorKind, Error)]
+
+          val parseErrors = ctx2.reporter.allErrors.toList
+          res ++= parseErrors.map(e => ErrorKind.Parser -> e)
+          if !stopAfterParser || res.isEmpty
+            ctx2.typer.typed(tree2)(ctx2)
+            val typerErrors = ctx2.reporter.allErrors.filterNot(parseErrors.contains)
+            res ++= typerErrors.map(e => ErrorKind.Typer -> e)
+          res.toList
+        case t =>
+          ctx.error("argument to compileError must be a statically known String", underlyingCodeArg.sourcePos)
+          Nil
+      }
+
+    private def packError(kind: ErrorKind, error: Error)(using Context): Tree =
+      def lit(x: Any) = Literal(Constant(x))
+      val constructor: Tree = ref(defn.CompiletimeTesting_Error_apply)
+      val parserErrorKind: Tree = ref(defn.CompiletimeTesting_ErrorKind_Parser)
+      val typerErrorKind: Tree = ref(defn.CompiletimeTesting_ErrorKind_Typer)
+
+      constructor.appliedTo(
+        lit(error.message),
+        lit(error.pos.lineContent.reverse.dropWhile("\n ".contains).reverse),
+        lit(error.pos.column),
+        if kind == ErrorKind.Parser then parserErrorKind else typerErrorKind)
+
+    private def packErrors(errors: List[(ErrorKind, Error)])(using Context): Tree =
+      val individualErrors: List[Tree] = errors.map(packError)
+      val errorTpt = ref(defn.CompiletimeTesting_ErrorClass)
+      mkList(individualErrors, errorTpt)
 
     /** Expand call to scala.compiletime.testing.typeChecks */
-    def typeChecks(tree: Tree)(implicit ctx: Context): Tree = {
-      assert(tree.symbol == defn.CompiletimeTesting_typeChecks)
-      def getCodeArgValue(t: Tree): Option[String] = t match {
-        case Literal(Constant(code: String)) => Some(code)
-        case Typed(t2, _) => getCodeArgValue(t2)
-        case Inlined(_, Nil, t2) => getCodeArgValue(t2)
-        case Block(Nil, t2) => getCodeArgValue(t2)
-        case _ => None
-      }
-      val Apply(_, codeArg :: Nil) = tree
-      getCodeArgValue(codeArg.underlyingArgument) match {
-        case Some(code) =>
-          val ctx2 = ctx.fresh.setNewTyperState().setTyper(new Typer)
-          val tree2 = new Parser(SourceFile.virtual("tasty-reflect", code))(ctx2).block()
-          val res =
-            if (ctx2.reporter.hasErrors) false
-            else {
-              ctx2.typer.typed(tree2)(ctx2)
-              !ctx2.reporter.hasErrors
-            }
-          Literal(Constant(res))
-        case _ =>
-          EmptyTree
-      }
-    }
+    def typeChecks(tree: Tree)(using Context): Tree =
+      val errors = compileForErrors(tree, true)
+      Literal(Constant(errors.isEmpty))
+
+    /** Expand call to scala.compiletime.testing.typeCheckErrors */
+    def typeCheckErrors(tree: Tree)(using Context): Tree =
+      val errors = compileForErrors(tree, false)
+      packErrors(errors)
   }
 }
 
@@ -242,8 +273,10 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
 
   inlining.println(i"-----------------------\nInlining $call\nWith RHS $rhsToInline")
 
-  // Make sure all type arguments to the call are fully determined
-  for (targ <- callTypeArgs) fullyDefinedType(targ.tpe, "inlined type argument", targ.span)
+  // Make sure all type arguments to the call are fully determined,
+  // but continue if that's not achievable (or else i7459.scala would crash).
+  for arg <- callTypeArgs do
+    isFullyDefined(arg.tpe, ForceDegree.flipBottom)
 
   /** A map from parameter names of the inlineable method to references of the actual arguments.
    *  For a type argument this is the full argument type.
@@ -301,9 +334,10 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
     val argtpe = arg.tpe.dealiasKeepAnnots
     val isByName = paramtp.dealias.isInstanceOf[ExprType]
     var inlineFlags: FlagSet = InlineProxy
-    if (paramtp.hasAnnotation(defn.InlineParamAnnot)) inlineFlags |= Inline
+    if (paramtp.widenExpr.hasAnnotation(defn.InlineParamAnnot)) inlineFlags |= Inline
+    if (isByName) inlineFlags |= Method
     val (bindingFlags, bindingType) =
-      if (isByName) (InlineByNameProxy.toTermFlags, ExprType(argtpe.widen))
+      if (isByName) (inlineFlags, ExprType(argtpe.widen))
       else (inlineFlags, argtpe.widen)
     val boundSym = newSym(name, bindingFlags, bindingType).asTerm
     val binding = {
@@ -316,9 +350,9 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
 
   /** Populate `paramBinding` and `bindingsBuf` by matching parameters with
    *  corresponding arguments. `bindingbuf` will be further extended later by
-   *  proxies to this-references.
+   *  proxies to this-references. Issue an error if some arguments are missing.
    */
-  private def computeParamBindings(tp: Type, targs: List[Tree], argss: List[List[Tree]]): Unit = tp match {
+  private def computeParamBindings(tp: Type, targs: List[Tree], argss: List[List[Tree]]): Boolean = tp match
     case tp: PolyType =>
       tp.paramNames.lazyZip(targs).foreach { (name, arg) =>
         paramSpan(name) = arg.span
@@ -326,19 +360,22 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       }
       computeParamBindings(tp.resultType, Nil, argss)
     case tp: MethodType =>
-      assert(argss.nonEmpty, i"missing bindings: $tp in $call")
-      tp.paramNames.lazyZip(tp.paramInfos).lazyZip(argss.head).foreach { (name, paramtp, arg) =>
-        paramSpan(name) = arg.span
-        paramBinding(name) = arg.tpe.dealias match {
-          case _: SingletonType if isIdempotentPath(arg) => arg.tpe
-          case _ => paramBindingDef(name, paramtp, arg, bindingsBuf).symbol.termRef
+      if argss.isEmpty then
+        ctx.error(i"mising arguments for inline method $inlinedMethod", call.sourcePos)
+        false
+      else
+        tp.paramNames.lazyZip(tp.paramInfos).lazyZip(argss.head).foreach { (name, paramtp, arg) =>
+          paramSpan(name) = arg.span
+          paramBinding(name) = arg.tpe.dealias match {
+            case _: SingletonType if isIdempotentPath(arg) => arg.tpe
+            case _ => paramBindingDef(name, paramtp, arg, bindingsBuf).symbol.termRef
+          }
         }
-      }
-      computeParamBindings(tp.resultType, targs, argss.tail)
+        computeParamBindings(tp.resultType, targs, argss.tail)
     case _ =>
       assert(targs.isEmpty)
       assert(argss.isEmpty)
-  }
+      true
 
   // Compute val-definitions for all this-proxies and append them to `bindingsBuf`
   private def computeThisBindings() = {
@@ -404,7 +441,9 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
         paramProxy(param.typeRef) = adaptToPrefix(param.typeRef)
     case tpe: NamedType
     if tpe.symbol.is(Param) && tpe.symbol.owner == inlinedMethod && !paramProxy.contains(tpe) =>
-      paramProxy(tpe) = paramBinding(tpe.name)
+      paramBinding.get(tpe.name) match
+        case Some(bound) => paramProxy(tpe) = bound
+        case _ =>  // can happen for params bound by type-lambda trees.
     case _ =>
   }
 
@@ -447,7 +486,8 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       }
 
     // Compute bindings for all parameters, appending them to bindingsBuf
-    computeParamBindings(inlinedMethod.info, callTypeArgs, callValueArgss)
+    if !computeParamBindings(inlinedMethod.info, callTypeArgs, callValueArgss) then
+      return call
 
     // make sure prefix is executed if it is impure
     if (!isIdempotentExpr(inlineCallPrefix)) registerType(inlinedMethod.owner.thisType)
@@ -519,19 +559,19 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
 
     def issueError() = callValueArgss match {
       case (msgArg :: Nil) :: Nil =>
-        msgArg.tpe match {
-          case ConstantType(Constant(msg: String)) =>
-            // Usually `error` is called from within a rewrite method. In this
-            // case we need to report the error at the point of the outermost enclosing inline
-            // call. This way, a defensively written rewrite methid can always
-            // report bad inputs at the point of call instead of revealing its internals.
-            val callToReport = if (enclosingInlineds.nonEmpty) enclosingInlineds.last else call
-            val ctxToReport = ctx.outersIterator.dropWhile(enclosingInlineds(_).nonEmpty).next
-            def issueInCtx(implicit ctx: Context) =
-              ctx.error(msg, callToReport.sourcePos)
-            issueInCtx(ctxToReport)
-          case _ =>
+        val message = msgArg.tpe match {
+          case ConstantType(Constant(msg: String)) => msg
+          case _ => s"A literal string is expected as an argument to `compiletime.error`. Got ${msgArg.show}"
         }
+        // Usually `error` is called from within a rewrite method. In this
+        // case we need to report the error at the point of the outermost enclosing inline
+        // call. This way, a defensively written rewrite methid can always
+        // report bad inputs at the point of call instead of revealing its internals.
+        val callToReport = if (enclosingInlineds.nonEmpty) enclosingInlineds.last else call
+        val ctxToReport = ctx.outersIterator.dropWhile(enclosingInlineds(_).nonEmpty).next
+        def issueInCtx(implicit ctx: Context) =
+          ctx.error(message, callToReport.sourcePos)
+        issueInCtx(ctxToReport)
       case _ =>
     }
 
@@ -727,10 +767,8 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
         def search(buf: mutable.ListBuffer[ValOrDefDef]) = buf.find(_.name == tree.name)
         if (paramProxies.contains(tree.typeOpt))
           search(bindingsBuf) match {
-            case Some(vdef: ValDef) if vdef.symbol.is(Inline) =>
-              Some(integrate(vdef.rhs, vdef.symbol))
-            case Some(ddef: DefDef) =>
-              Some(integrate(ddef.rhs, ddef.symbol))
+            case Some(bind: ValOrDefDef) if bind.symbol.is(Inline) =>
+              Some(integrate(bind.rhs, bind.symbol))
             case _ => None
           }
         else None
@@ -779,7 +817,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
               newOwners = ctx.owner :: Nil,
               substFrom = ddef.vparamss.head.map(_.symbol),
               substTo = argSyms)
-            Inlined(ddef, bindingsBuf.toList, expander.transform(ddef.rhs))
+            Block(bindingsBuf.toList, expander.transform(ddef.rhs))
           case _ => tree
         }
       case _ => tree
@@ -954,12 +992,6 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
                     yield constToLiteral(reduceProjection(ref(scrut).select(accessor).ensureApplied))
                   caseAccessors.length == pats.length && reduceSubPatterns(pats, selectors)
                 }
-                else if (unapp.symbol.isInlineMethod) { // TODO: Adapt to typed setting
-                  val app = untpd.Apply(untpd.TypedSplice(unapp), untpd.ref(scrut))
-                  val app1 = typer.typedExpr(app)
-                  val args = tupleArgs(app1)
-                  args.nonEmpty && reduceSubPatterns(pats, args)
-                }
                 else false
               case _ =>
                 false
@@ -999,7 +1031,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
               case _ => false
             }
           }
-          if (guardOK) Some((caseBindings, cdef.body.subst(from, to)))
+          if (guardOK) Some((caseBindings.map(_.subst(from, to)), cdef.body.subst(from, to)))
           else None
         }
         else None
@@ -1062,10 +1094,10 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
             errorTree(tree, em"""cannot reduce inline if
                                 | its condition   ${tree.cond}
                                 | is not a constant value""")
-          else {
+          else
+            cond1.computeNullableDeeply()
             val if1 = untpd.cpy.If(tree)(cond = untpd.TypedSplice(cond1))
             super.typedIf(if1, pt)
-          }
       }
 
     override def typedApply(tree: untpd.Apply, pt: Type)(implicit ctx: Context): Tree =
@@ -1099,7 +1131,6 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
                 }
               case _ => rhs0
             }
-
             val (usedBindings, rhs2) = dropUnusedDefs(caseBindings, rhs1)
             val rhs = seq(usedBindings, rhs2)
             inlining.println(i"""--- reduce:
@@ -1125,7 +1156,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
     override def newLikeThis: Typer = new InlineTyper(initialErrorCount)
 
     /** Suppress further inlining if this inline typer has already issued errors */
-    override def suppressInline(given ctx: Context) =
+    override def suppressInline(using ctx: Context) =
       ctx.reporter.errorCount > initialErrorCount || super.suppressInline
   }
 
@@ -1161,7 +1192,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
       val bindingOfSym = newMutableSymbolMap[MemberDef]
 
       def isInlineable(binding: MemberDef) = binding match {
-        case DefDef(_, Nil, Nil, _, _) => true
+        case ddef @ DefDef(_, Nil, Nil, _, _) => isPureExpr(ddef.rhs)
         case vdef @ ValDef(_, _, _) => isPureExpr(vdef.rhs)
         case _ => false
       }
@@ -1199,7 +1230,7 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           case Some(x) => x > 1 || x == 1 && !boundSym.is(Method)
           case none => true
         }
-      } && !(boundSym.isAllOf(InlineMethod) && boundSym.isOneOf(GivenOrImplicit))
+      } && !boundSym.is(Inline)
 
       val inlineBindings = new TreeMap {
         override def transform(t: Tree)(implicit ctx: Context) = t match {
@@ -1236,49 +1267,42 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
   private def expandMacro(body: Tree, span: Span)(implicit ctx: Context) = {
     assert(level == 0)
     val inlinedFrom = enclosingInlineds.last
-    val ctx1 = tastyreflect.MacroExpansion.context(inlinedFrom)
-
     val dependencies = macroDependencies(body)
 
-    if (dependencies.nonEmpty) {
-      var location = inlinedFrom.symbol
-      if (location.isLocalDummy) location = location.owner
+    if dependencies.nonEmpty && !ctx.reporter.errorsReported then
+      for sym <- dependencies do
+        if ctx.compilationUnit.source.file == sym.associatedFile then
+          ctx.error(em"Cannot call macro $sym defined in the same source file", call.sourcePos)
+        if (ctx.settings.XprintSuspension.value)
+          ctx.echo(i"suspension triggered by macro call to ${sym.showLocated} in ${sym.associatedFile}", call.sourcePos)
+      ctx.compilationUnit.suspend() // this throws a SuspendException
 
-      val msg =
-        em"""Failed to expand macro. This macro depends on an implementation that is defined in the same project and not yet compiled.
-           |In particular ${inlinedFrom.symbol} depends on ${dependencies.map(_.show).mkString(", ")}.
-           |
-           |Moving ${dependencies.map(_.show).mkString(", ")} to a different project would fix this.
-           |""".stripMargin
-      ctx.error(msg, inlinedFrom.sourcePos)
-      EmptyTree
+    val evaluatedSplice = {
+      given Context = tastyreflect.MacroExpansion.context(inlinedFrom)(using ctx)
+      Splicer.splice(body, inlinedFrom.sourcePos, MacroClassLoader.fromContext)
     }
-    else {
-      val evaluatedSplice = Splicer.splice(body, inlinedFrom.sourcePos, MacroClassLoader.fromContext)(ctx1)
-
-      val inlinedNormailizer = new TreeMap {
-        override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = tree match {
-          case Inlined(EmptyTree, Nil, expr) if enclosingInlineds.isEmpty => transform(expr)
-          case _ => super.transform(tree)
-        }
+    val inlinedNormailizer = new TreeMap {
+      override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree = tree match {
+        case Inlined(EmptyTree, Nil, expr) if enclosingInlineds.isEmpty => transform(expr)
+        case _ => super.transform(tree)
       }
-      val normalizedSplice = inlinedNormailizer.transform(evaluatedSplice)
-      if (normalizedSplice.isEmpty) normalizedSplice
-      else normalizedSplice.withSpan(span)
     }
+    val normalizedSplice = inlinedNormailizer.transform(evaluatedSplice)
+    if (normalizedSplice.isEmpty) normalizedSplice
+    else normalizedSplice.withSpan(span)
   }
 
-  /** Return the set of symbols that are refered at level -1 by the tree and defined in the current run.
+  /** Return the set of symbols that are referred at level -1 by the tree and defined in the current run.
    *  This corresponds to the symbols that will need to be interpreted.
    */
   private def macroDependencies(tree: Tree)(implicit ctx: Context) =
-    new TreeAccumulator[Set[Symbol]] {
-      private[this] var level = -1
-      override def apply(syms: Set[Symbol], tree: tpd.Tree)(implicit ctx: Context): Set[Symbol] =
+    new TreeAccumulator[List[Symbol]] {
+      private var level = -1
+      override def apply(syms: List[Symbol], tree: tpd.Tree)(implicit ctx: Context): List[Symbol] =
         if (level != -1) foldOver(syms, tree)
         else tree match {
           case tree: RefTree if level == -1 && tree.symbol.isDefinedInCurrentRun && !tree.symbol.isLocal =>
-            foldOver(syms + tree.symbol, tree)
+            foldOver(tree.symbol :: syms, tree)
           case Quoted(body) =>
             level += 1
             try apply(syms, body)
@@ -1290,6 +1314,5 @@ class Inliner(call: tpd.Tree, rhsToInline: tpd.Tree)(implicit ctx: Context) {
           case _ =>
             foldOver(syms, tree)
         }
-    }.apply(Set.empty, tree)
+    }.apply(Nil, tree)
 }
-

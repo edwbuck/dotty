@@ -5,10 +5,11 @@ title: "Intersection Types - More Details"
 
 ## Syntax
 
-Syntactically, an intersection type `S & T` is similar to an infix type, where
-the infix operator is `&`. `&` is treated as a soft keyword. That is, it is a
-normal identifier with the usual precedence. But a type of the form `A & B` is
-always recognized as an intersection type, without trying to resolve `&`.
+Syntactically, the type `S & T` is an infix type, where the infix operator is `&`.
+The operator `&` is a normal identifier
+with the usual precedence and subject to usual resolving rules.
+Unless shadowed by another definition, it resolves to the type `scala.&`,
+which acts as a type alias to an internal representation of intersection types.
 
 ```
 Type              ::=  ...| InfixType
@@ -55,7 +56,7 @@ When `C` is covariant, `C[A & B] <: C[A] & C[B]` can be derived:
 ```
     A <: A                  B <: B
   ----------               ---------
-  A & B <: A               A & B < B
+  A & B <: A               A & B <: B
 ---------------         -----------------
 C[A & B] <: C[A]          C[A & B] <: C[B]
 ------------------------------------------
@@ -67,7 +68,7 @@ When `C` is contravariant, `C[A | B] <: C[A] & C[B]` can be derived:
 ```
     A <: A                        B <: B
   ----------                     ---------
-  A <: A | B                     B < A | B
+  A <: A | B                     B <: A | B
 -------------------           ----------------
 C[A | B] <: C[A]              C[A | B] <: C[B]
 --------------------------------------------------
@@ -90,11 +91,13 @@ glb(A, B)                 =    A                     if A extends B
 glb(A, B)                 =    B                     if B extends A
 glb(A, _)                 =    A                     if A is not a trait
 glb(_, B)                 =    B                     if B is not a trait
-glb(A, _)                 =    A
+glb(A, _)                 =    A                     // use first
 ```
 
 In the above, `|T|` means the erased type of `T`, `JArray` refers to
 the type of Java Array.
+
+See also: `TypeErasure#erasedGlb`
 
 ## Relationship with Compound Type (`with`)
 

@@ -3,14 +3,15 @@ package dotc
 package core
 package tasty
 
+import dotty.tools.tasty.TastyFormat._
+import dotty.tools.tasty.TastyBuffer._
+
 import ast.Trees._
 import ast.{untpd, tpd}
-import TastyFormat._
 import Contexts._, Symbols._, Types._, Names._, Constants._, Decorators._, Annotations._, Flags._
 import typer.Inliner
 import NameKinds._
 import StdNames.nme
-import TastyBuffer._
 import transform.SymUtils._
 import printing.Printer
 import printing.Texts._
@@ -21,7 +22,9 @@ object TreePickler {
 
   val sectionName = "ASTs"
 
-  case class Hole(idx: Int, args: List[tpd.Tree])(implicit @constructorOnly src: SourceFile) extends tpd.Tree {
+  case class Hole(isTermHole: Boolean, idx: Int, args: List[tpd.Tree])(implicit @constructorOnly src: SourceFile) extends tpd.Tree {
+    override def isTerm: Boolean = isTermHole
+    override def isType: Boolean = !isTermHole
     override def fallbackToText(printer: Printer): Text =
       s"[[$idx|" ~~ printer.toTextGlobal(args, ", ") ~~ "]]"
   }
@@ -131,6 +134,15 @@ class TreePickler(pickler: TastyPickler) {
       pickleType(c.symbolValue.termRef)
   }
 
+  def pickleVariances(tp: Type)(using Context): Unit = tp match
+    case tp: HKTypeLambda if tp.isDeclaredVarianceLambda =>
+      for v <- tp.declaredVariances do
+        writeByte(
+          if v.is(Covariant) then COVARIANT
+          else if v.is(Contravariant) then CONTRAVARIANT
+          else STABLE)
+    case _ =>
+
   def pickleType(tpe0: Type, richTypes: Boolean = false)(implicit ctx: Context): Unit = {
     val tpe = tpe0.stripTypeVar
     try {
@@ -226,12 +238,14 @@ class TreePickler(pickler: TastyPickler) {
     case tpe: RecType =>
       writeByte(RECtype)
       pickleType(tpe.parent)
-    case tpe: TypeAlias =>
-      writeByte(TYPEALIAS)
-      pickleType(tpe.alias, richTypes)
     case tpe: TypeBounds =>
       writeByte(TYPEBOUNDS)
-      withLength { pickleType(tpe.lo, richTypes); pickleType(tpe.hi, richTypes) }
+      withLength {
+        pickleType(tpe.lo, richTypes)
+        if !tpe.isInstanceOf[AliasingBounds] then
+          pickleType(tpe.hi, richTypes)
+        pickleVariances(tpe.hi)
+      }
     case tpe: AnnotatedType =>
       writeByte(ANNOTATEDtype)
       withLength { pickleType(tpe.parent, richTypes); pickleTree(tpe.annot.tree) }
@@ -494,13 +508,15 @@ class TreePickler(pickler: TastyPickler) {
         case tree: ValDef =>
           pickleDef(VALDEF, tree.symbol, tree.tpt, tree.rhs)
         case tree: DefDef =>
-          def pickleAllParams = {
+          def pickleParamss(paramss: List[List[ValDef]]): Unit = paramss match
+            case Nil =>
+            case params :: rest =>
+              pickleParams(params)
+              if params.isEmpty || rest.nonEmpty then writeByte(PARAMEND)
+              pickleParamss(rest)
+          def pickleAllParams =
             pickleParams(tree.tparams)
-            for (vparams <- tree.vparamss) {
-              writeByte(PARAMS)
-              withLength { pickleParams(vparams) }
-            }
-          }
+            pickleParamss(tree.vparamss)
           pickleDef(DEFDEF, tree.symbol, tree.tpt, tree.rhs, pickleAllParams)
         case tree: TypeDef =>
           pickleDef(TYPEDEF, tree.symbol, tree.rhs)
@@ -547,6 +563,7 @@ class TreePickler(pickler: TastyPickler) {
           if (refinements.isEmpty) pickleTree(parent)
           else {
             val refineCls = refinements.head.symbol.owner.asClass
+            registerDef(refineCls)
             pickledTypes.put(refineCls.typeRef, currentAddr)
             writeByte(REFINEDtpt)
             refinements.foreach(preRegister)
@@ -571,13 +588,17 @@ class TreePickler(pickler: TastyPickler) {
         case LambdaTypeTree(tparams, body) =>
           writeByte(LAMBDAtpt)
           withLength { pickleParams(tparams); pickleTree(body) }
-        case TypeBoundsTree(lo, hi) =>
+        case TypeBoundsTree(lo, hi, alias) =>
           writeByte(TYPEBOUNDStpt)
           withLength {
             pickleTree(lo);
-            if (hi ne lo) pickleTree(hi)
+            if alias.isEmpty then
+              if hi ne lo then pickleTree(hi)
+            else
+              pickleTree(hi)
+              pickleTree(alias)
           }
-        case Hole(idx, args) =>
+        case Hole(_, idx, args) =>
           writeByte(HOLE)
           withLength {
             writeNat(idx)
@@ -585,6 +606,8 @@ class TreePickler(pickler: TastyPickler) {
           }
       }
       catch {
+        case ex: TypeError =>
+          ctx.error(ex.toMessage, tree.sourcePos.focus)
         case ex: AssertionError =>
           println(i"error when pickling tree $tree")
           throw ex
@@ -659,6 +682,7 @@ class TreePickler(pickler: TastyPickler) {
       if (flags.is(StableRealizable)) writeModTag(STABLE)
       if (flags.is(Extension)) writeModTag(EXTENSION)
       if (flags.is(ParamAccessor)) writeModTag(PARAMsetter)
+      if (flags.is(SuperParamAlias)) writeModTag(PARAMalias)
       if (flags.is(Exported)) writeModTag(EXPORTED)
       assert(!(flags.is(Label)))
     }
@@ -669,6 +693,7 @@ class TreePickler(pickler: TastyPickler) {
       if (flags.is(Covariant)) writeModTag(COVARIANT)
       if (flags.is(Contravariant)) writeModTag(CONTRAVARIANT)
       if (flags.is(Opaque)) writeModTag(OPAQUE)
+      if (flags.is(Open)) writeModTag(OPEN)
     }
   }
 

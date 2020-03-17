@@ -11,6 +11,7 @@ import util.SourcePosition
 import config.Printers.typr
 import ast.Trees._
 import NameOps._
+import ProtoTypes._
 import collection.mutable
 import reporting.diagnostic.messages._
 import Checking.{checkNoPrivateLeaks, checkNoWildcard}
@@ -53,22 +54,26 @@ trait TypeAssigner {
     def addRefinement(parent: Type, decl: Symbol) = {
       val inherited =
         parentType.findMember(decl.name, cls.thisType,
-          required = EmptyFlags, excluded = Private)
-          .suchThat(decl.matches(_))
+          required = EmptyFlags, excluded = Private
+        ).suchThat(decl.matches(_))
       val inheritedInfo = inherited.info
       val isPolyFunctionApply = decl.name == nme.apply && (parent <:< defn.PolyFunctionType)
-      if (isPolyFunctionApply || inheritedInfo.exists &&
-          decl.info.widenExpr <:< inheritedInfo.widenExpr &&
-          !(inheritedInfo.widenExpr <:< decl.info.widenExpr)) {
+      if isPolyFunctionApply
+         || inheritedInfo.exists
+            && !decl.isClass
+            && decl.info.widenExpr <:< inheritedInfo.widenExpr
+            && !(inheritedInfo.widenExpr <:< decl.info.widenExpr)
+      then
         val r = RefinedType(parent, decl.name, decl.info)
         typr.println(i"add ref $parent $decl --> " + r)
         r
-      }
       else
         parent
     }
 
-    def close(tp: Type) = RecType.closeOver(rt => tp.substThis(cls, rt.recThis))
+    def close(tp: Type) = RecType.closeOver { rt =>
+      tp.subst(cls :: Nil, rt.recThis :: Nil).substThis(cls, rt.recThis)
+    }
 
     def isRefinable(sym: Symbol) = !sym.is(Private) && !sym.isConstructor
     val refinableDecls = info.decls.filter(isRefinable)
@@ -156,7 +161,8 @@ trait TypeAssigner {
     avoid(expr.tpe, localSyms(bindings).filter(_.isTerm))
 
   def avoidPrivateLeaks(sym: Symbol)(implicit ctx: Context): Type =
-    if (!sym.isOneOf(PrivateOrSynthetic) && sym.owner.isClass) checkNoPrivateLeaks(sym)
+    if sym.owner.isClass && !sym.isOneOf(JavaOrPrivateOrSynthetic)
+    then checkNoPrivateLeaks(sym)
     else sym.info
 
   private def toRepeated(tree: Tree, from: ClassSymbol)(implicit ctx: Context): Tree =
@@ -262,10 +268,10 @@ trait TypeAssigner {
       errorType(ex"$qualType does not have a constructor", tree.sourcePos)
     else {
       val kind = if (name.isTypeName) "type" else "value"
-      val addendum =
+      def addendum =
         if (qualType.derivesFrom(defn.DynamicClass))
           "\npossible cause: maybe a wrong Dynamic method signature?"
-        else qual1.getAttachment(Typer.HiddenSearchFailure) match {
+        else qual1.getAttachment(Typer.HiddenSearchFailure) match
           case Some(failure) if !failure.reason.isInstanceOf[Implicits.NoMatchingImplicits] =>
             i""".
               |An extension method was tried, but could not be fully constructed:
@@ -277,11 +283,19 @@ trait TypeAssigner {
                  |Note that `$name` is treated as an infix operator in Scala 3.
                  |If you do not want that, insert a `;` or empty line in front
                  |or drop any spaces behind the operator."""
-            else ""
-        }
+            else if qualType.isBottomType then ""
+            else
+              var add = importSuggestionAddendum(
+                ViewProto(qualType.widen,
+                  SelectionProto(name, WildcardType, NoViewsAllowed, privateOK = false)))
+              if add.isEmpty then ""
+              else ", but could be made available as an extension method." ++ add
+      end addendum
       errorType(NotAMember(qualType, name, kind, addendum), tree.sourcePos)
     }
   }
+
+  def importSuggestionAddendum(pt: Type)(using Context): String = ""
 
   /** The type of the selection in `tree`, where `qual1` is the typed qualifier part.
    *  The selection type is additionally checked for accessibility.
@@ -303,8 +317,12 @@ trait TypeAssigner {
   def assignType(tree: untpd.Select, qual: Tree)(implicit ctx: Context): Select = {
     def qualType = qual.tpe.widen
     def arrayElemType = {
-      val JavaArrayType(elemtp) = qualType
-      elemtp
+      qualType match {
+        case JavaArrayType(elemtp) => elemtp
+        case _ =>
+          ctx.error("Expected Array but was " + qualType.show, tree.sourcePos)
+          defn.NothingType
+      }
     }
     val p = nme.primitive
     val tp = tree.name match {
@@ -407,6 +425,7 @@ trait TypeAssigner {
         else
           errorType(i"wrong number of arguments at ${ctx.phase.prev} for $fntpe: ${fn.tpe}, expected: ${fntpe.paramInfos.length}, found: ${args.length}", tree.sourcePos)
       case t =>
+        if (ctx.settings.Ydebug.value) new FatalError("").printStackTrace()
         errorType(err.takesNoParamsStr(fn, ""), tree.sourcePos)
     }
     ConstFold(tree.withType(ownType))
@@ -566,7 +585,7 @@ trait TypeAssigner {
   }
 
   def assignType(tree: untpd.AppliedTypeTree, tycon: Tree, args: List[Tree])(implicit ctx: Context): AppliedTypeTree = {
-    assert(!hasNamedArg(args))
+    assert(!hasNamedArg(args) || ctx.reporter.errorsReported, tree)
     val tparams = tycon.tpe.typeParams
     val ownType =
       if (sameLength(tparams, args))
@@ -588,8 +607,11 @@ trait TypeAssigner {
   def assignType(tree: untpd.ByNameTypeTree, result: Tree)(implicit ctx: Context): ByNameTypeTree =
     tree.withType(ExprType(result.tpe))
 
-  def assignType(tree: untpd.TypeBoundsTree, lo: Tree, hi: Tree)(implicit ctx: Context): TypeBoundsTree =
-    tree.withType(if (lo eq hi) TypeAlias(lo.tpe) else TypeBounds(lo.tpe, hi.tpe))
+  def assignType(tree: untpd.TypeBoundsTree, lo: Tree, hi: Tree, alias: Tree)(implicit ctx: Context): TypeBoundsTree =
+    tree.withType(
+      if !alias.isEmpty then alias.tpe
+      else if lo eq hi then TypeAlias(lo.tpe)
+      else TypeBounds(lo.tpe, hi.tpe))
 
   def assignType(tree: untpd.Bind, sym: Symbol)(implicit ctx: Context): Bind =
     tree.withType(NamedType(NoPrefix, sym))

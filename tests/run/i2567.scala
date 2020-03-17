@@ -1,16 +1,16 @@
 class TC
 
-given tc : TC
+given tc as TC
 
-class Foo(given TC) {
+class Foo(using TC) {
   println("hi")
 }
 
 object Test extends App {
   new Foo
-  new Foo(given tc)
+  new Foo(using tc)
   new Foo()
-  new Foo()(given tc)
+  new Foo()(using tc)
   Foo()
-  Foo()(given tc)
+  Foo()(using tc)
 }

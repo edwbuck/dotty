@@ -36,7 +36,7 @@ object JavaParsers {
     val in: JavaScanner = new JavaScanner(source)
 
     /** The simple name of the package of the currently parsed file */
-    private[this] var thisPackageName: TypeName = tpnme.EMPTY
+    private var thisPackageName: TypeName = tpnme.EMPTY
 
     /** This is the general parse entry point.
      *  Overridden by ScriptParser
@@ -112,14 +112,17 @@ object JavaParsers {
         case nil => (EmptyTree, nil)
       }
       var (constr1, stats1) = pullOutFirstConstr(stats)
-      if (constr1 == EmptyTree) constr1 = makeConstructor(List(), tparams)
       // A dummy first constructor is needed for Java classes so that the real constructors see the
       // import of the companion object. The constructor has parameter of type Unit so no Java code
       // can call it.
       // This also avoids clashes between the constructor parameter names and member names.
       if (needsDummyConstr) {
+        if (constr1 == EmptyTree) constr1 = makeConstructor(List(), Nil)
         stats1 = constr1 :: stats1
         constr1 = makeConstructor(List(scalaDot(tpnme.Unit)), tparams, Flags.JavaDefined | Flags.PrivateLocal)
+      }
+      else if (constr1 == EmptyTree) {
+        constr1 = makeConstructor(List(), tparams)
       }
       Template(constr1.asInstanceOf[DefDef], parents, Nil, EmptyValDef, stats1)
     }
@@ -329,29 +332,43 @@ object JavaParsers {
     }
 
     def annotations(): List[Tree] = {
-      //var annots = new ListBuffer[Tree]
+      var annots = new ListBuffer[Tree]
       while (in.token == AT) {
         in.nextToken()
-        annotation()
+        annotation() match {
+          case Some(anno) => annots += anno
+          case _ =>
+        }
       }
-      List() // don't pass on annotations for now
+      annots.toList
     }
 
     /** Annotation ::= TypeName [`(` AnnotationArgument {`,` AnnotationArgument} `)`]
       */
-    def annotation(): Unit = {
-      qualId()
-      if (in.token == LPAREN) { skipAhead(); accept(RPAREN) }
-      else if (in.token == LBRACE) { skipAhead(); accept(RBRACE) }
+    def annotation(): Option[Tree] = {
+      val id = convertToTypeId(qualId())
+      // only parse annotations without arguments
+      if (in.token == LPAREN && in.lookaheadToken != RPAREN) {
+        skipAhead()
+        accept(RPAREN)
+        None
+      }
+      else {
+        if (in.token == LPAREN) {
+          in.nextToken()
+          accept(RPAREN)
+        }
+        Some(ensureApplied(Select(New(id), nme.CONSTRUCTOR)))
+      }
     }
 
     def modifiers(inInterface: Boolean): Modifiers = {
       var flags: FlagSet = Flags.JavaDefined
       // assumed true unless we see public/private/protected
       var isPackageAccess = true
-      var annots: List[Tree] = Nil
+      var annots = new ListBuffer[Tree]
       def addAnnot(sym: ClassSymbol) =
-        annots :+= atSpan(in.offset) {
+        annots += atSpan(in.offset) {
           in.nextToken()
           New(TypeTree(sym.typeRef))
         }
@@ -360,7 +377,10 @@ object JavaParsers {
         in.token match {
           case AT if (in.lookaheadToken != INTERFACE) =>
             in.nextToken()
-            annotation()
+            annotation() match {
+              case Some(anno) => annots += anno
+              case _ =>
+            }
           case PUBLIC =>
             isPackageAccess = false
             in.nextToken()
@@ -396,7 +416,7 @@ object JavaParsers {
               if (isPackageAccess && !inInterface) thisPackageName
               else tpnme.EMPTY
 
-            return Modifiers(flags, privateWithin) withAnnotations annots
+            return Modifiers(flags, privateWithin) withAnnotations annots.toList
         }
       assert(false, "should not be here")
       throw new RuntimeException
@@ -489,7 +509,7 @@ object JavaParsers {
         optThrows()
         List {
           atSpan(start) {
-            DefDef(nme.CONSTRUCTOR, parentTParams,
+            DefDef(nme.CONSTRUCTOR, tparams,
                 List(vparams), TypeTree(), methodBody()).withMods(mods)
           }
         }
@@ -504,7 +524,7 @@ object JavaParsers {
           val vparams = formalParams()
           if (!isVoid) rtpt = optArrayBrackets(rtpt)
           optThrows()
-          val bodyOk = !inInterface || (mods.is(Flags.DefaultMethod))
+          val bodyOk = !inInterface || mods.isOneOf(Flags.DefaultMethod | Flags.JavaStatic)
           val body =
             if (bodyOk && in.token == LBRACE)
               methodBody()
@@ -584,9 +604,53 @@ object JavaParsers {
 
     def varDecl(mods: Modifiers, tpt: Tree, name: TermName): ValDef = {
       val tpt1 = optArrayBrackets(tpt)
-      if (in.token == EQUALS && !mods.is(Flags.Param)) skipTo(COMMA, SEMI)
+      /** Tries to detect final static literals syntactically and returns a constant type replacement */
+      def optConstantTpe(): Tree = {
+        def constantTpe(const: Constant): Tree = TypeTree(ConstantType(const))
+
+        def forConst(const: Constant): Tree = {
+          if (in.token != SEMI) tpt1
+          else {
+            def isStringTyped = tpt1 match {
+              case Ident(n: TypeName) => "String" == n.toString
+              case _ => false
+            }
+            if (const.tag == Constants.StringTag && isStringTyped) constantTpe(const)
+            else tpt1 match {
+              case TypedSplice(tpt2) =>
+                if (const.tag == Constants.BooleanTag || const.isNumeric) {
+                  //for example, literal 'a' is ok for float. 127 is ok for byte, but 128 is not.
+                  val converted = const.convertTo(tpt2.tpe)
+                  if (converted == null) tpt1
+                  else constantTpe(converted)
+                }
+                else tpt1
+              case _ => tpt1
+            }
+          }
+        }
+
+        in.nextToken() // EQUALS
+        if (mods.is(Flags.JavaStatic) && mods.is(Flags.Final)) {
+          val neg = in.token match {
+            case MINUS | BANG => in.nextToken(); true
+            case _ => false
+          }
+          tryLiteral(neg).map(forConst).getOrElse(tpt1)
+        }
+        else tpt1
+      }
+
+      val tpt2: Tree =
+        if (in.token == EQUALS && !mods.is(Flags.Param)) {
+          val res = optConstantTpe()
+          skipTo(COMMA, SEMI)
+          res
+        }
+        else tpt1
+
       val mods1 = if (mods.is(Flags.Final)) mods else mods | Flags.Mutable
-      ValDef(name, tpt1, if (mods.is(Flags.Param)) EmptyTree else unimplementedExpr).withMods(mods1)
+      ValDef(name, tpt2, if (mods.is(Flags.Param)) EmptyTree else unimplementedExpr).withMods(mods1)
     }
 
     def memberDecl(start: Offset, mods: Modifiers, parentToken: Int, parentTParams: List[TypeDef]): List[Tree] = in.token match {
@@ -862,6 +926,25 @@ object JavaParsers {
       case AT        => annotationDecl(start, mods)
       case CLASS     => classDecl(start, mods)
       case _         => in.nextToken(); syntaxError("illegal start of type declaration", skipIt = true); List(errorTypeTree)
+    }
+
+    def tryLiteral(negate: Boolean = false): Option[Constant] = {
+      val l = in.token match {
+        case TRUE      => !negate
+        case FALSE     => negate
+        case CHARLIT   => in.strVal.charAt(0)
+        case INTLIT    => in.intVal(negate).toInt
+        case LONGLIT   => in.intVal(negate)
+        case FLOATLIT  => in.floatVal(negate).toFloat
+        case DOUBLELIT => in.floatVal(negate)
+        case STRINGLIT => in.strVal
+        case _         => null
+      }
+      if (l == null) None
+      else {
+        in.nextToken()
+        Some(Constant(l))
+      }
     }
 
     /** CompilationUnit ::= [package QualId semi] TopStatSeq

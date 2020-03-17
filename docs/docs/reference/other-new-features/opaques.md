@@ -12,7 +12,8 @@ object Logarithms {
 
   object Logarithm {
 
-    // These are the ways to lift to the logarithm type
+    // These are the two ways to lift to the Logarithm type
+
     def apply(d: Double): Logarithm = math.log(d)
 
     def safe(d: Double): Option[Logarithm] =
@@ -20,44 +21,42 @@ object Logarithms {
   }
 
   // Extension methods define opaque types' public APIs
-  given logarithmOps: {
-    def (x: Logarithm) toDouble: Double = math.exp(x)
-    def (x: Logarithm) + (y: Logarithm): Logarithm = Logarithm(math.exp(x) + math.exp(y))
-    def (x: Logarithm) * (y: Logarithm): Logarithm = Logarithm(x + y)
+  extension logarithmOps on (x: Logarithm) {
+    def toDouble: Double = math.exp(x)
+    def + (y: Logarithm): Logarithm = Logarithm(math.exp(x) + math.exp(y))
+    def * (y: Logarithm): Logarithm = x + y
   }
 }
 ```
 
-This introduces `Logarithm` as a new type, which is implemented as `Double` but is different from it. The fact that `Logarithm` is the same as `Double` is only known in the scope where
-`Logarithm` is defined which in this case is object `Logarithms`.
+This introduces `Logarithm` as a new abstract type, which is implemented as `Double`. 
+The fact that `Logarithm` is the same as `Double` is only known in the scope where
+`Logarithm` is defined which in the above example corresponds to the object `Logarithms`.
+Or in other words, within the scope it is treated as type alias, but this is opaque to the outside world 
+where in consequence `Logarithm` is seen as an abstract type and has nothing to do with `Double`.
 
-The public API of `Logarithm` consists of the `apply` and `safe` methods that convert from doubles to `Logarithm` values, an extension method `toDouble` that converts the other way,
-and operations `+` and `*` on logarithm values. The implementations of these functions
-type-check because within object `Logarithms`, the type `Logarithm` is just an alias of `Double`.
-
-Outside its scope, `Logarithm` is treated as a new abstract type. So the
-following operations would be valid because they use functionality implemented in the `Logarithm` object.
+The public API of `Logarithm` consists of the `apply` and `safe` methods defined in the companion object. 
+They convert from `Double`s to `Logarithm` values. Moreover, a collective extension `logarithmOps` provides the extension methods `toDouble` that converts the other way,
+and operations `+` and `*` on `Logarithm` values. 
+The following operations would be valid because they use functionality implemented in the `Logarithms` object.
 
 ```scala
-  import Logarithms._
-  import Predef.{any2stringadd => _, _}
+import Logarithms.Logarithm
 
-  val l = Logarithm(1.0)
-  val l2 = Logarithm(2.0)
-  val l3 = l * l2
-  val l4 = l + l2
+val l = Logarithm(1.0)
+val l2 = Logarithm(2.0)
+val l3 = l * l2
+val l4 = l + l2
 ```
 
 But the following operations would lead to type errors:
 
 ```scala
-  val d: Double = l       // error: found: Logarithm, required: Double
-  val l2: Logarithm = 1.0 // error: found: Double, required: Logarithm
-  l * 2                   // error: found: Int(2), required: Logarithm
-  l / l2                  // error: `/` is not a member fo Logarithm
+val d: Double = l       // error: found: Logarithm, required: Double
+val l2: Logarithm = 1.0 // error: found: Double, required: Logarithm
+l * 2                   // error: found: Int(2), required: Logarithm
+l / l2                  // error: `/` is not a member of Logarithm
 ```
-
-Aside: the `any2stringadd => _` import suppression is necessary since otherwise the universal `+` operation in `Predef` would take precedence over the `+` extension method in `logarithmOps`. We plan to resolve this wart by eliminating `any2stringadd`.
 
 ### Bounds For Opaque Type Aliases
 
@@ -69,25 +68,36 @@ object Access {
   opaque type PermissionChoice = Int
   opaque type Permission <: Permissions & PermissionChoice = Int
 
-  def (x: Permissions) & (y: Permissions): Permissions = x & y
+  def (x: Permissions) & (y: Permissions): Permissions = x | y
   def (x: PermissionChoice) | (y: PermissionChoice): PermissionChoice = x | y
-  def (x: Permissions) is (y: Permissions) = (x & y) == y
-  def (x: Permissions) isOneOf (y: PermissionChoice) = (x & y) != 0
+  def (granted: Permissions).is(required: Permissions) = (granted & required) == required
+  def (granted: Permissions).isOneOf(required: PermissionChoice) = (granted & required) != 0
 
   val NoPermission: Permission = 0
-  val ReadOnly: Permission = 1
-  val WriteOnly: Permission = 2
-  val ReadWrite: Permissions = ReadOnly & WriteOnly
-  val ReadOrWrite: PermissionChoice = ReadOnly | WriteOnly
+  val Read: Permission = 1
+  val Write: Permission = 2
+  val ReadWrite: Permissions = Read | Write
+  val ReadOrWrite: PermissionChoice = Read | Write
 }
 ```
-The `Access` object defines three opaque types:
+The `Access` object defines three opaque type aliases:
 
  - `Permission`, representing a single permission,
- - `Permissions`, representing a conjunction (logical "and") of permissions,
- - `PermissionChoice`, representing a disjunction (logical "or") of permissions.
+ - `Permissions`, representing a set of permissions with the meaning "all of these permissions granted",
+ - `PermissionChoice`, representing a set of permissions with the meaning "at least one of these permissions granted".
 
-All three opaque types have the same underlying representation type `Int`. The
+Outside the `Access` object, values of type `Permissions` may be combined using the `&` operator,
+where `x & y` means "all permissions in `x` *and* in `y` granted".
+Values of type `PermissionChoice` may be combined using the `|` operator,
+where `x | y` means "a permission in `x` *or* in `y` granted".
+
+Note that inside the `Access` object, the `&` and `|` operators always resolve to the corresponding methods of `Int`,
+because members always take precedence over extension methods.
+Because of that, the `|` extension method in `Access` does not cause infinite recursion.
+Also, the definition of `ReadWrite` must use `|`,
+even though an equivalent definition outside `Access` would use `&`.
+
+All three opaque type aliases have the same underlying representation type `Int`. The
 `Permission` type has an upper bound `Permissions & PermissionChoice`. This makes
 it known outside the `Access` object that `Permission` is a subtype of the other
 two types.  Hence, the following usage scenario type-checks.
@@ -97,13 +107,21 @@ object User {
 
   case class Item(rights: Permissions)
 
-  val x = Item(ReadOnly)  // OK, since Permission <: Permissions
+  val roItem = Item(Read)  // OK, since Permission <: Permissions
+  val rwItem = Item(ReadWrite)
+  val noItem = Item(NoPermission)
 
-  assert( x.rights.is(ReadWrite) == false )
-  assert( x.rights.isOneOf(ReadOrWrite) == true )
+  assert( roItem.rights.is(ReadWrite) == false )
+  assert( roItem.rights.isOneOf(ReadOrWrite) == true )
+
+  assert( rwItem.rights.is(ReadWrite) == true )
+  assert( rwItem.rights.isOneOf(ReadOrWrite) == true )
+
+  assert( noItem.rights.is(ReadWrite) == false )
+  assert( noItem.rights.isOneOf(ReadOrWrite) == false )
 }
 ```
-On the other hand, the call `x.rights.isOneOf(ReadWrite)` would give a type error
+On the other hand, the call `roItem.rights.isOneOf(ReadWrite)` would give a type error
 since `Permissions` and `PermissionChoice` are different, unrelated types outside `Access`.
 
 [More details](opaques-details.md)

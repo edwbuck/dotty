@@ -49,13 +49,13 @@ object DesugarEnums {
     val tparams = enumClass.typeParams
     def isGround(tp: Type) = tp.subst(tparams, tparams.map(_ => NoType)) eq tp
     val targs = tparams map { tparam =>
-      if (tparam.variance > 0 && isGround(tparam.info.bounds.lo))
+      if (tparam.is(Covariant) && isGround(tparam.info.bounds.lo))
         tparam.info.bounds.lo
-      else if (tparam.variance < 0 && isGround(tparam.info.bounds.hi))
+      else if (tparam.is(Contravariant) && isGround(tparam.info.bounds.hi))
         tparam.info.bounds.hi
       else {
         def problem =
-          if (tparam.variance == 0) "is non variant"
+          if (!tparam.isOneOf(VarianceFlags)) "is non variant"
           else "has bounds that depend on a type parameter in the same parameter list"
         errorType(i"""cannot determine type argument for enum parent $enumClass,
                      |type parameter $tparam $problem""", ctx.source.atSpan(span))
@@ -70,8 +70,8 @@ object DesugarEnums {
 
   /** Add implied flags to an enum class or an enum case */
   def addEnumFlags(cdef: TypeDef)(implicit ctx: Context): TypeDef =
-    if (cdef.mods.isEnumClass) cdef.withMods(cdef.mods.withFlags(cdef.mods.flags | Abstract | Sealed))
-    else if (isEnumCase(cdef)) cdef.withMods(cdef.mods.withFlags(cdef.mods.flags | Final))
+    if (cdef.mods.isEnumClass) cdef.withMods(cdef.mods.withAddedFlags(Abstract | Sealed, cdef.span))
+    else if (isEnumCase(cdef)) cdef.withMods(cdef.mods.withAddedFlags(Final, cdef.span))
     else cdef
 
   private def valuesDot(name: PreName)(implicit src: SourceFile) =
@@ -99,7 +99,7 @@ object DesugarEnums {
     val privateValuesDef =
       ValDef(nme.DOLLAR_VALUES, TypeTree(),
         New(TypeTree(defn.EnumValuesClass.typeRef.appliedTo(enumClass.typeRef :: Nil)), ListOfNil))
-        .withFlags(Private)
+        .withFlags(Private | Synthetic)
 
     val valuesOfExnMessage = Apply(
       Select(Literal(Constant("key not found: ")), "concat".toTermName),
@@ -288,7 +288,7 @@ object DesugarEnums {
       val toStringDef = toStringMethLit(name.toString)
       val impl1 = cpy.Template(impl)(body = List(ordinalDef, toStringDef) ++ registerCall)
         .withAttachment(ExtendsSingletonMirror, ())
-      val vdef = ValDef(name, TypeTree(), New(impl1)).withMods(mods | EnumValue)
+      val vdef = ValDef(name, TypeTree(), New(impl1)).withMods(mods.withAddedFlags(EnumValue, span))
       flatTree(scaffolding ::: vdef :: Nil).withSpan(span)
     }
   }
@@ -304,7 +304,7 @@ object DesugarEnums {
     else {
       val (tag, scaffolding) = nextOrdinal(CaseKind.Simple)
       val creator = Apply(Ident(nme.DOLLAR_NEW), List(Literal(Constant(tag)), Literal(Constant(name.toString))))
-      val vdef = ValDef(name, enumClassRef, creator).withMods(mods | EnumValue)
+      val vdef = ValDef(name, enumClassRef, creator).withMods(mods.withAddedFlags(EnumValue, span))
       flatTree(scaffolding ::: vdef :: Nil).withSpan(span)
     }
 }

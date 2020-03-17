@@ -64,6 +64,6 @@ class AugmentScala2Traits extends MiniPhase with IdentityDenotTransformer { this
         || sym.isSuperAccessor) // scala2 superaccessors are pickled as private, but are compiled as public expanded
         sym.ensureNotPrivate.installAfter(thisPhase)
     }
-    mixin.setFlag(Scala2xPartiallyAugmented)
+    mixin.setFlagFrom(thisPhase, Scala2xPartiallyAugmented)
   }
 }

@@ -4,7 +4,7 @@ title: Numeric Literals
 ---
 
 In Scala 2, numeric literals were confined to the primitive numeric types `Int`, `Long`, `Float`, and `Double`. Scala 3 allows to write numeric literals also for user defined types. Example:
-```
+```scala
 val x: Long = -10_000_000_000
 val y: BigInt = 0x123_abc_789_def_345_678_901
 val z: BigDecimal = 110_222_799_799.99
@@ -105,11 +105,11 @@ for this type.
 of `FromDigitsException`. `FromDigitsException` is defined with three subclasses in the
 `FromDigits` object as follows:
 ```scala
-  abstract class FromDigitsException(msg: String) extends NumberFormatException(msg)
+abstract class FromDigitsException(msg: String) extends NumberFormatException(msg)
 
-  class NumberTooLarge (msg: String = "number too large")         extends FromDigitsException(msg)
-  class NumberTooSmall (msg: String = "number too small")         extends FromDigitsException(msg)
-  class MalformedNumber(msg: String = "malformed number literal") extends FromDigitsException(msg)
+class NumberTooLarge (msg: String = "number too large")         extends FromDigitsException(msg)
+class NumberTooSmall (msg: String = "number too small")         extends FromDigitsException(msg)
+class MalformedNumber(msg: String = "malformed number literal") extends FromDigitsException(msg)
 ```
 
 ### Example
@@ -156,7 +156,7 @@ object BigFloat {
 To accept `BigFloat` literals, all that's needed in addition is a given instance of type
 `FromDigits.Floating[BigFloat]`:
 ```scala
-  given FromDigits : FromDigits.Floating[BigFloat] {
+  given FromDigits as FromDigits.Floating[BigFloat] {
     def fromDigits(digits: String) = apply(digits)
   }
 } // end BigFloat
@@ -201,12 +201,12 @@ no code that can be executed at runtime. That's why we define an intermediary cl
 method in the `FromDigits` given instance. That method is defined in terms of a macro
 implementation method `fromDigitsImpl`. Here is its definition:
 ```scala
-  private def fromDigitsImpl(digits: Expr[String]) given (ctx: QuoteContext): Expr[BigFloat] =
+  private def fromDigitsImpl(digits: Expr[String])(using ctx: QuoteContext): Expr[BigFloat] =
     digits match {
       case Const(ds) =>
         try {
           val BigFloat(m, e) = apply(ds)
-          '{BigFloat(${m.toExpr}, ${e.toExpr})}
+          '{BigFloat(${Expr(m)}, ${Expr(e)})}
         }
         catch {
           case ex: FromDigits.FromDigitsException =>
@@ -231,7 +231,7 @@ in the `ctx.error(ex.getMessage)` call.
 
 With this new implementation, a definition like
 ```scala
-  val x: BigFloat = 1234.45e3333333333
+val x: BigFloat = 1234.45e3333333333
 ```
 would give a compile time error message:
 ```scala
@@ -239,7 +239,3 @@ would give a compile time error message:
   |                    ^^^^^^^^^^^^^^^^^^
   |                    exponent too large: 3333333333
 ```
-
-
-
-

@@ -147,8 +147,8 @@ object Names {
     /** Is this name empty? */
     def isEmpty: Boolean
 
-    /** Does (the first part of) this name start with `str`? */
-    def startsWith(str: String): Boolean = firstPart.startsWith(str)
+    /** Does (the first part of) this name starting at index `start` starts with `str`? */
+    def startsWith(str: String, start: Int = 0): Boolean = firstPart.startsWith(str, start)
 
     /** Does (the last part of) this name end with `str`? */
     def endsWith(str: String): Boolean = lastPart.endsWith(str)
@@ -168,7 +168,7 @@ object Names {
     override def asTermName: TermName = this
 
     @sharable // because it is only modified in the synchronized block of toTypeName.
-    @volatile private[this] var _typeName: TypeName = null
+    @volatile private var _typeName: TypeName = null
 
     override def toTypeName: TypeName = {
       if (_typeName == null)
@@ -185,7 +185,7 @@ object Names {
     def underlying: TermName = unsupported("underlying")
 
     @sharable // because of synchronized block in `and`
-    private[this] var derivedNames: immutable.Map[NameInfo, DerivedName] | HashMap[NameInfo, DerivedName] =
+    private var derivedNames: immutable.Map[NameInfo, DerivedName] | HashMap[NameInfo, DerivedName] =
       immutable.Map.empty[NameInfo, DerivedName]
 
     private def getDerived(info: NameInfo): DerivedName /* | Null */ = (derivedNames: @unchecked) match {
@@ -253,10 +253,10 @@ object Names {
     }
 
     @sharable // because it's just a cache for performance
-    private[this] var myMangledString: String = null
+    private var myMangledString: String = null
 
     @sharable // because it's just a cache for performance
-    private[this] var myMangled: Name = null
+    private var myMangled: Name = null
 
     protected[Names] def mangle: ThisName
 
@@ -362,9 +362,9 @@ object Names {
 
     override def isEmpty: Boolean = length == 0
 
-    override def startsWith(str: String): Boolean = {
+    override def startsWith(str: String, start: Int): Boolean = {
       var i = 0
-      while (i < str.length && i < length && apply(i) == str(i)) i += 1
+      while (i < str.length && start + i < length && apply(start + i) == str(i)) i += 1
       i == str.length
     }
 
@@ -532,15 +532,15 @@ object Names {
 
   /** The number of characters filled. */
   @sharable // because it's only mutated in synchronized block of termName
-  private[this] var nc = 0
+  private var nc = 0
 
   /** Hashtable for finding term names quickly. */
   @sharable // because it's only mutated in synchronized block of termName
-  private[this] var table = new Array[SimpleName](InitialHashSize)
+  private var table = new Array[SimpleName](InitialHashSize)
 
   /** The number of defined names. */
   @sharable // because it's only mutated in synchronized block of termName
-  private[this] var size = 1
+  private var size = 1
 
   /** The hash of a name made of from characters cs[offset..offset+len-1].  */
   private def hashValue(cs: Array[Char], offset: Int, len: Int): Int = {

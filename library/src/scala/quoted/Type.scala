@@ -1,78 +1,53 @@
-package scala
+package scala.quoted
 
-package quoted {
-  import scala.quoted.show.SyntaxHighlight
+import scala.quoted.show.SyntaxHighlight
 
-  sealed trait Type[T <: AnyKind] {
-    type `$splice` = T
+/** Quoted type (or kind) `T` */
+class Type[T <: AnyKind] private[scala] {
+  type `$splice` = T
 
-    /** Show a source code like representation of this type without syntax highlight */
-    def show(implicit qctx: QuoteContext): String = qctx.show(this, SyntaxHighlight.plain)
+  /** Show a source code like representation of this type without syntax highlight */
+  def show(using qctx: QuoteContext): String =
+    this.unseal.showWith(SyntaxHighlight.plain)
 
-    /** Show a source code like representation of this type */
-    def show(syntaxHighlight: SyntaxHighlight)(implicit qctx: QuoteContext): String = qctx.show(this, syntaxHighlight)
+  /** Show a source code like representation of this type */
+  def show(syntaxHighlight: SyntaxHighlight)(using qctx: QuoteContext): String =
+    this.unseal.showWith(syntaxHighlight)
 
-  }
-
-  /** Some basic type tags, currently incomplete */
-  object Type {
-
-    given UnitTag(given qctx: QuoteContext): Type[Unit] = {
-      import qctx.tasty._
-      defn.UnitType.seal.asInstanceOf[quoted.Type[Unit]]
-    }
-
-    given BooleanTag(given qctx: QuoteContext): Type[Boolean] = {
-      import qctx.tasty._
-      defn.BooleanType.seal.asInstanceOf[quoted.Type[Boolean]]
-    }
-
-    given ByteTag(given qctx: QuoteContext): Type[Byte] = {
-      import qctx.tasty._
-      defn.ByteType.seal.asInstanceOf[quoted.Type[Byte]]
-    }
-
-    given CharTag(given qctx: QuoteContext): Type[Char] = {
-      import qctx.tasty._
-      defn.CharType.seal.asInstanceOf[quoted.Type[Char]]
-    }
-
-    given ShortTag(given qctx: QuoteContext): Type[Short] = {
-      import qctx.tasty._
-      defn.ShortType.seal.asInstanceOf[quoted.Type[Short]]
-    }
-
-    given IntTag(given qctx: QuoteContext): Type[Int] = {
-      import qctx.tasty._
-      defn.IntType.seal.asInstanceOf[quoted.Type[Int]]
-    }
-
-    given LongTag(given qctx: QuoteContext): Type[Long] = {
-      import qctx.tasty._
-      defn.LongType.seal.asInstanceOf[quoted.Type[Long]]
-    }
-
-    given FloatTag(given qctx: QuoteContext): Type[Float] = {
-      import qctx.tasty._
-      defn.FloatType.seal.asInstanceOf[quoted.Type[Float]]
-    }
-
-    given DoubleTag(given qctx: QuoteContext): Type[Double] = {
-      import qctx.tasty._
-      defn.DoubleType.seal.asInstanceOf[quoted.Type[Double]]
-    }
-
-  }
+  /** View this expression `quoted.Type[T]` as a `TypeTree` */
+  def unseal(using qctx: QuoteContext): qctx.tasty.TypeTree =
+    qctx.tasty.internal.QuotedType_unseal(this)(using qctx.tasty.rootContext)
 
 }
 
-package internal {
-  package quoted {
+/** Some basic type tags, currently incomplete */
+object Type {
 
-    /** An Type backed by a tree */
-    final class TreeType[Tree](val typeTree: Tree, val scopeId: Int) extends scala.quoted.Type[Any] {
-      override def toString: String = s"Type(<tasty tree>)"
-    }
+  given UnitTag(using qctx: QuoteContext) as Type[Unit] =
+    qctx.tasty.defn.UnitType.seal.asInstanceOf[quoted.Type[Unit]]
 
-  }
+  given BooleanTag(using qctx: QuoteContext) as Type[Boolean] =
+    qctx.tasty.defn.BooleanType.seal.asInstanceOf[quoted.Type[Boolean]]
+
+  given ByteTag(using qctx: QuoteContext) as Type[Byte] =
+    qctx.tasty.defn.ByteType.seal.asInstanceOf[quoted.Type[Byte]]
+
+  given CharTag(using qctx: QuoteContext) as Type[Char] =
+    qctx.tasty.defn.CharType.seal.asInstanceOf[quoted.Type[Char]]
+
+  given ShortTag(using qctx: QuoteContext) as Type[Short] =
+    qctx.tasty.defn.ShortType.seal.asInstanceOf[quoted.Type[Short]]
+
+  given IntTag(using qctx: QuoteContext) as Type[Int] =
+    qctx.tasty.defn.IntType.seal.asInstanceOf[quoted.Type[Int]]
+
+  given LongTag(using qctx: QuoteContext) as Type[Long] =
+    qctx.tasty.defn.LongType.seal.asInstanceOf[quoted.Type[Long]]
+
+  given FloatTag(using qctx: QuoteContext) as Type[Float] =
+    qctx.tasty.defn.FloatType.seal.asInstanceOf[quoted.Type[Float]]
+
+  given DoubleTag(using qctx: QuoteContext) as Type[Double] =
+    qctx.tasty.defn.DoubleType.seal.asInstanceOf[quoted.Type[Double]]
+
 }

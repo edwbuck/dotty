@@ -22,6 +22,7 @@ import ast.tpd
 import tpd.{Tree, TreeProvider, TreeOps}
 import ast.TreeTypeMap
 import Constants.Constant
+import Variances.{Variance, varianceFromInt}
 import reporting.diagnostic.Message
 import collection.mutable
 import io.AbstractFile
@@ -282,14 +283,15 @@ trait Symbols { this: Context =>
     val tparamBuf = new mutable.ListBuffer[TypeSymbol]
     val trefBuf = new mutable.ListBuffer[TypeRef]
     for (name <- names) {
-      val tparam = newNakedSymbol[TypeName](owner.coord)
+      val tparam = newSymbol(
+        owner, name, flags | owner.typeParamCreationFlags, NoType, coord = owner.coord)
       tparamBuf += tparam
       trefBuf += TypeRef(owner.thisType, tparam)
     }
     val tparams = tparamBuf.toList
     val bounds = boundsFn(trefBuf.toList)
-    for ((name, tparam, bound) <- names.lazyZip(tparams).lazyZip(bounds))
-      tparam.denot = SymDenotation(tparam, owner, name, flags | owner.typeParamCreationFlags, bound)
+    for (tparam, bound) <- tparams.lazyZip(bounds) do
+      tparam.info = bound
     tparams
   }
 
@@ -383,6 +385,12 @@ trait Symbols { this: Context =>
       .requiredSymbol("class", name, generateStubs = false)(_.isClass)
   }
 
+  /** Get a List of ClassSymbols which are either defined in current compilation
+   *  run or present on classpath.
+   */
+  def getClassesIfDefined(paths: List[PreName]): List[ClassSymbol] =
+    paths.map(getClassIfDefined).filter(_.exists).map(_.asInstanceOf[ClassSymbol])
+
   /** Get ClassSymbol if package is either defined in current compilation run
    *  or present on classpath.
    *  Returns NoSymbol otherwise. */
@@ -418,7 +426,7 @@ object Symbols {
    *  @param coord  The coordinates of the symbol (a position or an index)
    *  @param id     A unique identifier of the symbol (unique per ContextBase)
    */
-  class Symbol private[Symbols] (private[this] var myCoord: Coord, val id: Int)
+  class Symbol private[Symbols] (private var myCoord: Coord, val id: Int)
     extends Designator with ParamInfo with printing.Showable {
 
     type ThisName <: Name
@@ -437,7 +445,7 @@ object Symbols {
       myCoord = c
     }
 
-    private[this] var myDefTree: Tree = null
+    private var myDefTree: Tree = null
 
     /** The tree defining the symbol at pickler time, EmptyTree if none was retained */
     def defTree: Tree =
@@ -453,12 +461,13 @@ object Symbols {
      */
     def retainsDefTree(implicit ctx: Context): Boolean =
       ctx.settings.YretainTrees.value ||
-      denot.owner.isTerm ||        // no risk of leaking memory after a run for these
-      denot.isOneOf(InlineOrProxy)      // need to keep inline info
+      denot.owner.isTerm ||                // no risk of leaking memory after a run for these
+      denot.isOneOf(InlineOrProxy) ||      // need to keep inline info
+      ctx.settings.YcheckInit.value        // initialization check
 
     /** The last denotation of this symbol */
-    private[this] var lastDenot: SymDenotation = _
-    private[this] var checkedPeriod: Period = Nowhere
+    private var lastDenot: SymDenotation = _
+    private var checkedPeriod: Period = Nowhere
 
     private[core] def invalidateDenotCache(): Unit = { checkedPeriod = Nowhere }
 
@@ -692,7 +701,7 @@ object Symbols {
     def paramInfo(implicit ctx: Context): Type = denot.info
     def paramInfoAsSeenFrom(pre: Type)(implicit ctx: Context): Type = pre.memberInfo(this)
     def paramInfoOrCompleter(implicit ctx: Context): Type = denot.infoOrCompleter
-    def paramVariance(implicit ctx: Context): Int = denot.variance
+    def paramVariance(implicit ctx: Context): Variance = denot.variance
     def paramRef(implicit ctx: Context): TypeRef = denot.typeRef
 
 // -------- Printing --------------------------------------------------------
@@ -726,7 +735,7 @@ object Symbols {
 
     type TreeOrProvider = tpd.TreeProvider | tpd.Tree
 
-    private[this] var myTree: TreeOrProvider = tpd.EmptyTree
+    private var myTree: TreeOrProvider = tpd.EmptyTree
 
     /** If this is a top-level class and `-Yretain-trees` (or `-from-tasty`) is set.
       * Returns the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
@@ -783,7 +792,7 @@ object Symbols {
       if (assocFile != null || this.owner.is(PackageClass) || this.isEffectiveRoot) assocFile
       else super.associatedFile
 
-    private[this] var mySource: SourceFile = NoSource
+    private var mySource: SourceFile = NoSource
 
     final def sourceOfClass(implicit ctx: Context): SourceFile = {
       if (!mySource.exists && !denot.is(Package))
@@ -908,6 +917,6 @@ object Symbols {
     override def toString: String = value.asScala.toString()
   }
 
-  @forceInline def newMutableSymbolMap[T]: MutableSymbolMap[T] =
+  inline def newMutableSymbolMap[T]: MutableSymbolMap[T] =
     new MutableSymbolMap(new java.util.IdentityHashMap[Symbol, T]())
 }

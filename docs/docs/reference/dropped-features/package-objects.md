@@ -5,25 +5,25 @@ title: "Dropped: Package Objects"
 
 Package objects
 ```scala
-    package object p {
-      val a = ...
-      def b = ...
-    }
+package object p {
+  val a = ...
+  def b = ...
+}
 ```
 will be dropped. They are still available in Scala 3.0, but will be deprecated and removed afterwards.
 
 Package objects are no longer needed since all kinds of definitions can now be written at the top-level. E.g.
 ```scala
-    package p
-    type Labelled[T] = (String, T)
-    val a: Labelled[Int] = ("count", 1)
-    def b = a._2
+package p
+type Labelled[T] = (String, T)
+val a: Labelled[Int] = ("count", 1)
+def b = a._2
 
-    case class C()
+case class C()
 
-    implicit object Cops {
-      def (x: C) pair (y: C) = (x, y)
-    }
+implicit object Cops {
+  def (x: C).pair(y: C) = (x, y)
+}
 ```
 There may be several source files in a package containing such toplevel definitions, and source files can freely mix toplevel value, method, and type definitions with classes and objects.
 
@@ -42,3 +42,6 @@ in a source file `src.scala`, it could be invoked from the command line using a 
 "program name" is mangled it is recommended to always put `main` methods in explicitly named objects.
 
 **Note 3:** The notion of `private` is independent of whether a definition is wrapped or not. A `private` toplevel definition is always visible from everywhere in the enclosing package.
+
+**Note 4:** If several toplevel definitions are overloaded variants with the same name,
+they must all come from the same source file.

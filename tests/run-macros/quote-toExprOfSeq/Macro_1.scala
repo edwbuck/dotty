@@ -1,8 +1,8 @@
 import scala.quoted._
-import scala.quoted.given
+import scala.quoted.{given _}
 
 inline def seq = ${fooImpl}
 
-def fooImpl(given qctx: QuoteContext) = {
-  List('{1}, '{2}, '{3}).toExprOfSeq
+def fooImpl(using qctx: QuoteContext) = {
+  Expr.ofSeq(List('{1}, '{2}, '{3}))
 }

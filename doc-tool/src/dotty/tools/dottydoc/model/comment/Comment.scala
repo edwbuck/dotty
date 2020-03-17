@@ -6,7 +6,7 @@ package comment
 import dotty.tools.dottydoc.util.syntax._
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.util.Spans._
-import com.vladsch.flexmark.ast.{ Node => MarkdownNode }
+import com.vladsch.flexmark.util.ast.{ Node => MarkdownNode }
 import HtmlParsers._
 import util.MemberLookup
 
@@ -85,7 +85,7 @@ trait MarkupConversion[T] extends MemberLookup {
     short                   = stringToShortHtml(parsed.body),
     authors                 = filterEmpty(parsed.authors).map(markupToHtml),
     see                     = filterEmpty(parsed.see).map(markupToHtml),
-    result                  = single("@result", parsed.result).map(markupToHtml),
+    result                  = single("@return", parsed.result).map(markupToHtml),
     throws                  = linkedExceptions(parsed.throws),
     valueParams             = filterEmpty(parsed.valueParams).transform((_, v) => markupToHtml(v)).toMap,
     typeParams              = filterEmpty(parsed.typeParams).transform((_, v) => markupToHtml(v)).toMap,

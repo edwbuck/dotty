@@ -3,33 +3,41 @@ package scala.internal.quoted
 import scala.annotation.internal.sharable
 
 import scala.quoted._
-import scala.quoted.matching.Bind
 
 private[quoted] object Matcher {
 
-  class QuoteMatcher[QCtx <: QuoteContext & Singleton](given val qctx: QCtx) {
+  class QuoteMatcher[QCtx <: QuoteContext & Singleton](using val qctx: QCtx) {
     // TODO improve performance
 
+    // TODO use flag from qctx.tasty.rootContext. Maybe -debug or add -debug-macros
     private final val debug = false
 
-    import qctx.tasty.{Bind => BindPattern, _}
+    import qctx.tasty._
     import Matching._
 
-    private type Env = Set[(Symbol, Symbol)]
+    /** A map relating equivalent symbols from the scrutinee and the pattern
+     *  For example in
+     *  ```
+     *  '{val a = 4; a * a} match case '{ val x = 4; x * x }
+     *  ```
+     *  when matching `a * a` with `x * x` the environment will contain `Map(a -> x)`.
+     */
+    private type Env = Map[Symbol, Symbol]
 
-    inline private def withEnv[T](env: Env)(body: => ImplicitFunction1[Env, T]): T = body(given env)
+    inline private def withEnv[T](env: Env)(body: => Env ?=> T): T = body(using env)
 
     class SymBinding(val sym: Symbol, val fromAbove: Boolean)
 
     def termMatch(scrutineeTerm: Term, patternTerm: Term, hasTypeSplices: Boolean): Option[Tuple] = {
-      implicit val env: Env = Set.empty
+      given Env = Map.empty
       if (hasTypeSplices) {
-        implicit val ctx: Context = internal.Context_GADT_setFreshGADTBounds(rootContext)
+        val ctx: Context = internal.Context_GADT_setFreshGADTBounds(rootContext)
+        given Context = ctx
         val matchings = scrutineeTerm.underlyingArgument =?= patternTerm.underlyingArgument
-        // After matching and doing all subtype checks, we have to aproximate all the type bindings
+        // After matching and doing all subtype checks, we have to approximate all the type bindings
         // that we have found and seal them in a quoted.Type
         matchings.asOptionOfTuple.map { tup =>
-          Tuple.fromArray(tup.toArray.map { // TODO improve performace
+          Tuple.fromArray(tup.toArray.map { // TODO improve performance
             case x: SymBinding => internal.Context_GADT_approximation(summon[Context])(x.sym, !x.fromAbove).seal
             case x => x
           })
@@ -42,14 +50,15 @@ private[quoted] object Matcher {
 
     // TODO factor out common logic with `termMatch`
     def typeTreeMatch(scrutineeTypeTree: TypeTree, patternTypeTree: TypeTree, hasTypeSplices: Boolean): Option[Tuple] = {
-      implicit val env: Env = Set.empty
+      given Env = Map.empty
       if (hasTypeSplices) {
-        implicit val ctx: Context = internal.Context_GADT_setFreshGADTBounds(rootContext)
+        val ctx: Context = internal.Context_GADT_setFreshGADTBounds(rootContext)
+        given Context = ctx
         val matchings = scrutineeTypeTree =?= patternTypeTree
-        // After matching and doing all subtype checks, we have to aproximate all the type bindings
+        // After matching and doing all subtype checks, we have to approximate all the type bindings
         // that we have found and seal them in a quoted.Type
         matchings.asOptionOfTuple.map { tup =>
-          Tuple.fromArray(tup.toArray.map { // TODO improve performace
+          Tuple.fromArray(tup.toArray.map { // TODO improve performance
             case x: SymBinding => internal.Context_GADT_approximation(summon[Context])(x.sym, !x.fromAbove).seal
             case x => x
           })
@@ -86,15 +95,13 @@ private[quoted] object Matcher {
       case _ => notMatched
     }
 
-    private given treeListOps: {
-
+    private extension treeListOps on (scrutinees: List[Tree]) {
       /** Check that all trees match with =?= and concatenate the results with && */
-      def (scrutinees: List[Tree]) =?= (patterns: List[Tree])(given Context, Env): Matching =
+      def =?= (patterns: List[Tree])(using Context, Env): Matching =
         matchLists(scrutinees, patterns)(_ =?= _)
-
     }
 
-    private given treeOps: {
+    private extension treeOps on (scrutinee0: Tree) {
 
       /** Check that the trees match and return the contents from the pattern holes.
        *  Return None if the trees do not match otherwise return Some of a tuple containing all the contents in the holes.
@@ -104,7 +111,7 @@ private[quoted] object Matcher {
        *  @param `summon[Env]` Set of tuples containing pairs of symbols (s, p) where s defines a symbol in `scrutinee` which corresponds to symbol p in `pattern`.
        *  @return `None` if it did not match or `Some(tup: Tuple)` if it matched where `tup` contains the contents of the holes.
        */
-      def (scrutinee0: Tree) =?= (pattern0: Tree)(given Context, Env): Matching = {
+      def =?= (pattern0: Tree)(using Context, Env): Matching = {
 
         /** Normalize the tree */
         def normalize(tree: Tree): Tree = tree match {
@@ -126,22 +133,40 @@ private[quoted] object Matcher {
         }
 
         def bindingMatch(sym: Symbol) =
-          matched(new Bind(sym.name, sym))
+          matched(sym.name)
 
         (scrutinee, pattern) match {
 
           // Match a scala.internal.Quoted.patternHole typed as a repeated argument and return the scrutinee tree
-          case (IsTerm(scrutinee @ Typed(s, tpt1)), Typed(TypeApply(patternHole, tpt :: Nil), tpt2))
+          case (scrutinee @ Typed(s, tpt1), Typed(TypeApply(patternHole, tpt :: Nil), tpt2))
               if patternHole.symbol == internal.Definitions_InternalQuoted_patternHole &&
                  s.tpe <:< tpt.tpe &&
                  tpt2.tpe.derivesFrom(defn.RepeatedParamClass) =>
             matched(scrutinee.seal)
 
           // Match a scala.internal.Quoted.patternHole and return the scrutinee tree
-          case (IsTerm(scrutinee), TypeApply(patternHole, tpt :: Nil))
+          case (ClosedPatternTerm(scrutinee), TypeApply(patternHole, tpt :: Nil))
               if patternHole.symbol == internal.Definitions_InternalQuoted_patternHole &&
                  scrutinee.tpe <:< tpt.tpe =>
             matched(scrutinee.seal)
+
+          // Matches an open term and wraps it into a lambda that provides the free variables
+          case (scrutinee, pattern @ Apply(Select(TypeApply(patternHole, List(Inferred())), "apply"), args0 @ IdentArgs(args)))
+              if patternHole.symbol == internal.Definitions_InternalQuoted_patternHole =>
+            def bodyFn(lambdaArgs: List[Tree]): Tree = {
+              val argsMap = args.map(_.symbol).zip(lambdaArgs.asInstanceOf[List[Term]]).toMap
+              new TreeMap {
+                override def transformTerm(tree: Term)(using ctx: Context): Term =
+                  tree match
+                    case tree: Ident => summon[Env].get(tree.symbol).flatMap(argsMap.get).getOrElse(tree)
+                    case tree => super.transformTerm(tree)
+              }.transformTree(scrutinee)
+            }
+            val names = args.map(_.name)
+            val argTypes = args0.map(x => x.tpe.widenTermRefExpr)
+            val resType = pattern.tpe
+            val res = Lambda(MethodType(names)(_ => argTypes, _ => resType), bodyFn)
+            matched(res.seal)
 
           //
           // Match two equivalent trees
@@ -156,19 +181,19 @@ private[quoted] object Matcher {
           case (scrutinee, Typed(expr2, _)) =>
             scrutinee =?= expr2
 
-          case (Ident(_), Ident(_)) if scrutinee.symbol == pattern.symbol || summon[Env].apply((scrutinee.symbol, pattern.symbol)) =>
+          case (Ident(_), Ident(_)) if scrutinee.symbol == pattern.symbol || summon[Env].get(scrutinee.symbol).contains(pattern.symbol) =>
             matched
 
           case (Select(qual1, _), Select(qual2, _)) if scrutinee.symbol == pattern.symbol =>
             qual1 =?= qual2
 
-          case (IsRef(_), IsRef(_)) if scrutinee.symbol == pattern.symbol =>
+          case (_: Ref, _: Ref) if scrutinee.symbol == pattern.symbol =>
             matched
 
-          case (Apply(fn1, args1), Apply(fn2, args2)) if fn1.symbol == fn2.symbol =>
+          case (Apply(fn1, args1), Apply(fn2, args2)) if fn1.symbol == fn2.symbol || summon[Env].get(fn1.symbol).contains(fn2.symbol) =>
             fn1 =?= fn2 && args1 =?= args2
 
-          case (TypeApply(fn1, args1), TypeApply(fn2, args2)) if fn1.symbol == fn2.symbol =>
+          case (TypeApply(fn1, args1), TypeApply(fn2, args2)) if fn1.symbol == fn2.symbol || summon[Env].get(fn1.symbol).contains(fn2.symbol) =>
             fn1 =?= fn2 && args1 =?= args2
 
           case (Block(stats1, expr1), Block(binding :: stats2, expr2)) if isTypeBinding(binding) =>
@@ -176,7 +201,13 @@ private[quoted] object Matcher {
             matched(new SymBinding(binding.symbol, hasFromAboveAnnotation(binding.symbol))) && Block(stats1, expr1) =?= Block(stats2, expr2)
 
           case (Block(stat1 :: stats1, expr1), Block(stat2 :: stats2, expr2)) =>
-            withEnv(summon[Env] + (stat1.symbol -> stat2.symbol)) {
+            val newEnv = (stat1, stat2) match {
+              case (stat1: Definition, stat2: Definition) =>
+                summon[Env] + (stat1.symbol -> stat2.symbol)
+              case _ =>
+                summon[Env]
+            }
+            withEnv(newEnv) {
               stat1 =?= stat2 && Block(stats1, expr1) =?= Block(stats2, expr2)
             }
 
@@ -197,8 +228,8 @@ private[quoted] object Matcher {
           case (While(cond1, body1), While(cond2, body2)) =>
             cond1 =?= cond2 && body1 =?= body2
 
-          case (New(tpt1), New(tpt2)) =>
-            tpt1 =?= tpt2
+          case (New(tpt1), New(tpt2)) if tpt1.tpe.typeSymbol == tpt2.tpe.typeSymbol =>
+            matched
 
           case (This(_), This(_)) if scrutinee.symbol == pattern.symbol =>
             matched
@@ -209,7 +240,7 @@ private[quoted] object Matcher {
           case (Repeated(elems1, _), Repeated(elems2, _)) if elems1.size == elems2.size =>
             elems1 =?= elems2
 
-          case (IsTypeTree(scrutinee), IsTypeTree(pattern)) if scrutinee.tpe <:< pattern.tpe =>
+          case (scrutinee: TypeTree, pattern: TypeTree) if scrutinee.tpe <:< pattern.tpe =>
             matched
 
           case (Applied(tycon1, args1), Applied(tycon2, args2)) =>
@@ -220,16 +251,18 @@ private[quoted] object Matcher {
               if (hasBindAnnotation(pattern.symbol) || hasBindTypeAnnotation(tpt2)) bindingMatch(scrutinee.symbol)
               else matched
             def rhsEnv = summon[Env] + (scrutinee.symbol -> pattern.symbol)
-            bindMatch && tpt1 =?= tpt2 && treeOptMatches(rhs1, rhs2)(given summon[Context], rhsEnv)
+            bindMatch && tpt1 =?= tpt2 && treeOptMatches(rhs1, rhs2)(using summon[Context], rhsEnv)
 
           case (DefDef(_, typeParams1, paramss1, tpt1, Some(rhs1)), DefDef(_, typeParams2, paramss2, tpt2, Some(rhs2))) =>
             val bindMatch =
               if (hasBindAnnotation(pattern.symbol)) bindingMatch(scrutinee.symbol)
               else matched
             def rhsEnv =
-              summon[Env] + (scrutinee.symbol -> pattern.symbol) ++
-                typeParams1.zip(typeParams2).map((tparam1, tparam2) => tparam1.symbol -> tparam2.symbol) ++
+              val oldEnv: Env = summon[Env]
+              val newEnv: List[(Symbol, Symbol)] =
+                (scrutinee.symbol -> pattern.symbol) :: typeParams1.zip(typeParams2).map((tparam1, tparam2) => tparam1.symbol -> tparam2.symbol) :::
                 paramss1.flatten.zip(paramss2.flatten).map((param1, param2) => param1.symbol -> param2.symbol)
+              oldEnv ++ newEnv
 
             bindMatch &&
               typeParams1 =?= typeParams2 &&
@@ -268,7 +301,7 @@ private[quoted] object Matcher {
                    |
                    |${pattern.showExtractors}
                    |
-                   |
+                   |with environment: ${summon[Env]}
                    |
                    |
                    |""".stripMargin)
@@ -277,7 +310,34 @@ private[quoted] object Matcher {
       }
     }
 
-    private def treeOptMatches(scrutinee: Option[Tree], pattern: Option[Tree])(given Context, Env): Matching = {
+    private object ClosedPatternTerm {
+      /** Matches a term that does not contain free variables defined in the pattern (i.e. not defined in `Env`) */
+      def unapply(term: Term)(using Context, Env): Option[term.type] =
+        if freePatternVars(term).isEmpty then Some(term) else None
+
+      /** Return all free variables of the term defined in the pattern (i.e. defined in `Env`) */
+      def freePatternVars(term: Term)(using ctx: Context, env: Env): Set[Symbol] =
+        val accumulator = new TreeAccumulator[Set[Symbol]] {
+          def foldTree(x: Set[Symbol], tree: Tree)(using ctx: Context): Set[Symbol] =
+            tree match
+              case tree: Ident if env.contains(tree.symbol) => foldOverTree(x + tree.symbol, tree)
+              case _ => foldOverTree(x, tree)
+        }
+        accumulator.foldTree(Set.empty, term)
+    }
+
+    private object IdentArgs {
+      def unapply(args: List[Term])(using Context): Option[List[Ident]] =
+        args.foldRight(Option(List.empty[Ident])) {
+          case (id: Ident, Some(acc)) => Some(id :: acc)
+          case (Block(List(DefDef("$anonfun", Nil, List(params), Inferred(), Some(Apply(id: Ident, args)))), Closure(Ident("$anonfun"), None)), Some(acc))
+              if params.zip(args).forall(_.symbol == _.symbol) =>
+            Some(id :: acc)
+          case _ => None
+        }
+    }
+
+    private def treeOptMatches(scrutinee: Option[Tree], pattern: Option[Tree])(using Context, Env): Matching = {
       (scrutinee, pattern) match {
         case (Some(x), Some(y)) => x =?= y
         case (None, None) => matched
@@ -285,8 +345,8 @@ private[quoted] object Matcher {
       }
     }
 
-    private def caseMatches(scrutinee: CaseDef, pattern: CaseDef)(given Context, Env): Matching = {
-      val (caseEnv, patternMatch) = scrutinee.pattern =?= pattern.pattern
+    private def caseMatches(scrutinee: CaseDef, pattern: CaseDef)(using Context, Env): Matching = {
+      val (caseEnv, patternMatch) = patternsMatches(scrutinee.pattern, pattern.pattern)
       withEnv(caseEnv) {
         patternMatch &&
           treeOptMatches(scrutinee.guard, pattern.guard) &&
@@ -294,76 +354,73 @@ private[quoted] object Matcher {
       }
     }
 
-    private given patternOps: {
 
-      /** Check that the pattern trees match and return the contents from the pattern holes.
-       *  Return a tuple with the new environment containing the bindings defined in this pattern and a matching.
-       *  The matching is None if the pattern trees do not match otherwise return Some of a tuple containing all the contents in the holes.
-       *
-       *  @param scrutinee The pattern tree beeing matched
-       *  @param pattern The pattern tree that the scrutinee should match. Contains `patternHole` holes.
-       *  @param `summon[Env]` Set of tuples containing pairs of symbols (s, p) where s defines a symbol in `scrutinee` which corresponds to symbol p in `pattern`.
-       *  @return The new environment containing the bindings defined in this pattern tuppled with
-       *          `None` if it did not match or `Some(tup: Tuple)` if it matched where `tup` contains the contents of the holes.
-       */
-      def (scrutinee: Pattern) =?= (pattern: Pattern)(given Context, Env): (Env, Matching) = (scrutinee, pattern) match {
-        case (Pattern.Value(v1), Pattern.Unapply(TypeApply(Select(patternHole @ Ident("patternHole"), "unapply"), List(tpt)), Nil, Nil))
-          if patternHole.symbol.owner.fullName == "scala.runtime.quoted.Matcher$" =>
-          (summon[Env], matched(v1.seal))
+    /** Check that the pattern trees match and return the contents from the pattern holes.
+      *  Return a tuple with the new environment containing the bindings defined in this pattern and a matching.
+      *  The matching is None if the pattern trees do not match otherwise return Some of a tuple containing all the contents in the holes.
+      *
+      *  @param scrutinee The pattern tree beeing matched
+      *  @param pattern The pattern tree that the scrutinee should match. Contains `patternHole` holes.
+      *  @param `summon[Env]` Set of tuples containing pairs of symbols (s, p) where s defines a symbol in `scrutinee` which corresponds to symbol p in `pattern`.
+      *  @return The new environment containing the bindings defined in this pattern tuppled with
+      *          `None` if it did not match or `Some(tup: Tuple)` if it matched where `tup` contains the contents of the holes.
+      */
+    private def patternsMatches(scrutinee: Tree, pattern: Tree)(using Context, Env): (Env, Matching) = (scrutinee, pattern) match {
+      case (v1: Term, Unapply(TypeApply(Select(patternHole @ Ident("patternHole"), "unapply"), List(tpt)), Nil, Nil))
+          if patternHole.symbol.owner == summon[Context].requiredModule("scala.runtime.quoted.Matcher") =>
+        (summon[Env], matched(v1.seal))
 
-        case (Pattern.Value(v1), Pattern.Value(v2)) =>
-          (summon[Env], v1 =?= v2)
+      case (Ident("_"), Ident("_")) =>
+        (summon[Env], matched)
 
-        case (Pattern.Bind(name1, body1), Pattern.Bind(name2, body2)) =>
-          val bindEnv = summon[Env] + (scrutinee.symbol -> pattern.symbol)
-          (body1 =?= body2)(given summon[Context], bindEnv)
+      case (Bind(name1, body1), Bind(name2, body2)) =>
+        val bindEnv = summon[Env] + (scrutinee.symbol -> pattern.symbol)
+        patternsMatches(body1, body2)(using summon[Context], bindEnv)
 
-        case (Pattern.Unapply(fun1, implicits1, patterns1), Pattern.Unapply(fun2, implicits2, patterns2)) =>
-          val (patEnv, patternsMatch) = foldPatterns(patterns1, patterns2)
-          (patEnv, fun1 =?= fun2 && implicits1 =?= implicits2 && patternsMatch)
+      case (Unapply(fun1, implicits1, patterns1), Unapply(fun2, implicits2, patterns2)) =>
+        val (patEnv, patternsMatch) = foldPatterns(patterns1, patterns2)
+        (patEnv, patternsMatches(fun1, fun2)._2 && implicits1 =?= implicits2 && patternsMatch)
 
-        case (Pattern.Alternatives(patterns1), Pattern.Alternatives(patterns2)) =>
-          foldPatterns(patterns1, patterns2)
+      case (Alternatives(patterns1), Alternatives(patterns2)) =>
+        foldPatterns(patterns1, patterns2)
 
-        case (Pattern.TypeTest(tpt1), Pattern.TypeTest(tpt2)) =>
-          (summon[Env], tpt1 =?= tpt2)
+      case (Typed(Ident("_"), tpt1), Typed(Ident("_"), tpt2)) =>
+        (summon[Env], tpt1 =?= tpt2)
 
-        case (Pattern.WildcardPattern(), Pattern.WildcardPattern()) =>
-          (summon[Env], matched)
+      case (v1: Term, v2: Term) =>
+        (summon[Env], v1 =?= v2)
 
-        case _ =>
-          if (debug)
-            println(
-              s""">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-                 |Scrutinee
-                 |  ${scrutinee.show}
-                 |
-                 |${scrutinee.showExtractors}
-                 |
-                 |did not match pattern
-                 |  ${pattern.show}
-                 |
-                 |${pattern.showExtractors}
-                 |
-                 |
-                 |
-                 |
-                 |""".stripMargin)
-          (summon[Env], notMatched)
-      }
-
+      case _ =>
+        if (debug)
+          println(
+            s""">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                |Scrutinee
+                |  ${scrutinee.show}
+                |
+                |${scrutinee.showExtractors}
+                |
+                |did not match pattern
+                |  ${pattern.show}
+                |
+                |${pattern.showExtractors}
+                |
+                |with environment: ${summon[Env]}
+                |
+                |
+                |""".stripMargin)
+        (summon[Env], notMatched)
     }
 
-    private def foldPatterns(patterns1: List[Pattern], patterns2: List[Pattern])(given Context, Env): (Env, Matching) = {
+    private def foldPatterns(patterns1: List[Tree], patterns2: List[Tree])(using Context, Env): (Env, Matching) = {
       if (patterns1.size != patterns2.size) (summon[Env], notMatched)
       else patterns1.zip(patterns2).foldLeft((summon[Env], matched)) { (acc, x) =>
-        val (env, res) = (x._1 =?= x._2)(given summon[Context], acc._1)
+        val (env, res) = patternsMatches(x._1, x._2)(using summon[Context], acc._1)
         (env, acc._2 && res)
       }
     }
 
     private def isTypeBinding(tree: Tree): Boolean = tree match {
-      case IsTypeDef(tree) => hasBindAnnotation(tree.symbol)
+      case tree: TypeDef => hasBindAnnotation(tree.symbol)
       case _ => false
     }
   }
@@ -379,7 +436,7 @@ private[quoted] object Matcher {
 
     def (self: Matching) asOptionOfTuple: Option[Tuple] = self
 
-    /** Concatenates the contents of two sucessful matchings or return a `notMatched` */
+    /** Concatenates the contents of two successful matchings or return a `notMatched` */
     def (self: Matching) && (that: => Matching): Matching = self match {
       case Some(x) =>
         that match {

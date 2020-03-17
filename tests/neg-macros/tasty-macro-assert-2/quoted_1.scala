@@ -9,16 +9,16 @@ object Asserts {
 
   object Ops
 
-  inline def macroAssert(cond: => Boolean): Unit =
+  inline def macroAssert(inline cond: Boolean): Unit =
     ${ impl('cond) }
 
-  def impl(cond: Expr[Boolean])(given qctx: QuoteContext): Expr[Unit] = {
+  def impl(cond: Expr[Boolean])(using qctx: QuoteContext) : Expr[Unit] = {
     import qctx.tasty._
 
     val tree = cond.unseal
 
     def isOps(tpe: TypeOrBounds): Boolean = tpe match {
-      case Type.IsTermRef(tpe) => tpe.termSymbol.isDefDef && tpe.name == "Ops"// TODO check that the parent is Asserts
+      case tpe: TermRef => tpe.termSymbol.isDefDef && tpe.name == "Ops"// TODO check that the parent is Asserts
       case _ => false
     }
 

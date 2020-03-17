@@ -116,9 +116,12 @@ object Denotations {
      */
     def filterWithFlags(required: FlagSet, excluded: FlagSet)(implicit ctx: Context): PreDenotation
 
-    private[this] var cachedPrefix: Type = _
-    private[this] var cachedAsSeenFrom: AsSeenFromResult = _
-    private[this] var validAsSeenFrom: Period = Nowhere
+    /** Map `f` over all single denotations and aggregate the results with `g`. */
+    def aggregate[T](f: SingleDenotation => T, g: (T, T) => T): T
+
+    private var cachedPrefix: Type = _
+    private var cachedAsSeenFrom: AsSeenFromResult = _
+    private var validAsSeenFrom: Period = Nowhere
 
     type AsSeenFromResult <: PreDenotation
 
@@ -459,7 +462,7 @@ object Denotations {
         /** Sym preference provided types also override */
         def prefer(sym1: Symbol, sym2: Symbol, info1: Type, info2: Type) =
           preferSym(sym1, sym2) &&
-          info1.overrides(info2, sym1.matchNullaryLoosely || sym2.matchNullaryLoosely)
+          info1.overrides(info2, sym1.matchNullaryLoosely || sym2.matchNullaryLoosely, checkClassInfo = false)
 
         def handleDoubleDef =
           if (preferSym(sym1, sym2)) denot1
@@ -486,7 +489,7 @@ object Denotations {
                   // things, starting with the return type of this method.
                   if (preferSym(sym2, sym1)) info2
                   else if (preferSym(sym1, sym2)) info1
-                  else if (pre.widen.classSymbol.is(Scala2x) || ctx.scala2Mode)
+                  else if (pre.widen.classSymbol.is(Scala2x) || ctx.scala2CompatMode)
                     info1 // follow Scala2 linearization -
                   // compare with way merge is performed in SymDenotation#computeMembersNamed
                   else throw new MergeError(ex.sym1, ex.sym2, ex.tp1, ex.tp2, pre)
@@ -600,13 +603,13 @@ object Denotations {
       case tp1: TypeBounds =>
         tp2 match {
           case tp2: TypeBounds => if (safeIntersection) tp1 safe_& tp2 else tp1 & tp2
-          case tp2: ClassInfo if tp1 contains tp2 => tp2
+          case tp2: ClassInfo => tp2
           case _ => mergeConflict(sym1, sym2, tp1, tp2)
         }
       case tp1: ClassInfo =>
         tp2 match {
           case tp2: ClassInfo if tp1.cls eq tp2.cls => tp1.derivedClassInfo(tp1.prefix & tp2.prefix)
-          case tp2: TypeBounds if tp2 contains tp1 => tp1
+          case tp2: TypeBounds => tp1
           case _ => mergeConflict(sym1, sym2, tp1, tp2)
         }
 
@@ -653,15 +656,18 @@ object Denotations {
       case ExprType(rtp1) =>
         tp2 match {
           case ExprType(rtp2) => ExprType(rtp1 & rtp2)
-          case _ => rtp1 & tp2
+          case _ => infoMeet(rtp1, tp2, sym1, sym2, safeIntersection)
         }
       case _ =>
-        try tp1 & tp2.widenExpr
-        catch {
-          case ex: Throwable =>
-            println(i"error for meet: $tp1 &&& $tp2, ${tp1.getClass}, ${tp2.getClass}")
-            throw ex
-        }
+        tp2 match
+          case _: MethodType | _: PolyType =>
+            mergeConflict(sym1, sym2, tp1, tp2)
+          case _ =>
+            try tp1 & tp2.widenExpr
+            catch
+              case ex: Throwable =>
+                println(i"error for meet: $tp1 &&& $tp2, ${tp1.getClass}, ${tp2.getClass}")
+                throw ex
     }
 
   /** Normally, `tp1 | tp2`.
@@ -769,12 +775,12 @@ object Denotations {
 
     def matchesImportBound(bound: Type)(implicit ctx: Context): Boolean =
       if bound.isRef(defn.NothingClass) then false
-      else if bound.isRef(defn.AnyClass) then true
+      else if bound.isAny then true
       else NoViewsAllowed.normalizedCompatible(info, bound, keepConstraint = false)
 
     // ------ Transformations -----------------------------------------
 
-    private[this] var myValidFor: Period = Nowhere
+    private var myValidFor: Period = Nowhere
 
     def validFor: Period = myValidFor
     def validFor_=(p: Period): Unit = {
@@ -826,9 +832,10 @@ object Denotations {
 
     private def updateValidity()(implicit ctx: Context): this.type = {
       assert(
-        ctx.runId >= validFor.runId ||
-        ctx.settings.YtestPickler.value || // mixing test pickler with debug printing can travel back in time
-        symbol.is(Permanent),              // Permanent symbols are valid in all runIds
+        ctx.runId >= validFor.runId
+        || ctx.settings.YtestPickler.value // mixing test pickler with debug printing can travel back in time
+        || ctx.mode.is(Mode.Printing)  // no use to be picky when printing error messages
+        || symbol.isOneOf(ValidForeverFlags),
         s"denotation $this invalid in run ${ctx.runId}. ValidFor: $validFor")
       var d: SingleDenotation = this
       while ({
@@ -1129,6 +1136,7 @@ object Denotations {
       if (denots.exists && denots.matches(this)) NoDenotation else this
     def filterWithFlags(required: FlagSet, excluded: FlagSet)(implicit ctx: Context): SingleDenotation =
       if (required.isEmpty && excluded.isEmpty || compatibleWith(required, excluded)) this else NoDenotation
+    def aggregate[T](f: SingleDenotation => T, g: (T, T) => T): T = f(this)
 
     type AsSeenFromResult = SingleDenotation
     protected def computeAsSeenFrom(pre: Type)(implicit ctx: Context): SingleDenotation = {
@@ -1158,30 +1166,8 @@ object Denotations {
           info.asSeenFrom(pre, owner),
           if (symbol.is(Opaque) || this.prefix != NoPrefix) pre else this.prefix)
 
-      pre match {
-        case pre: ThisType if symbol.isOpaqueAlias && pre.cls == owner =>
-          // This code is necessary to compensate for a "window of vulnerability" with
-          // opaque types. The problematic sequence is as follows.
-          //  1. Type a selection  `m.this.T` where `T` is an opaque type alias in `m`
-          //     and this is the first access
-          //  2. `T` will normalize to an abstract type on completion.
-          //  3. At that time, the default logic in the second case is wrong: `T`'s new info
-          //     is now an abstract type and running it through an asSeenFrom gives nothing.
-          //  We fix this as follows:
-          //  1. Force opaque normalization as first step
-          //  2. Read the info from the enclosing object's refinement
-          symbol.normalizeOpaque()
-          def findRefined(tp: Type, name: Name): Type = tp match {
-            case RefinedType(parent, rname, rinfo) =>
-              if (rname == name) rinfo else findRefined(parent, name)
-            case _ =>
-              symbol.info
-          }
-          derived(findRefined(pre.underlying, symbol.name))
-        case _ =>
-          if (!owner.membersNeedAsSeenFrom(pre) || symbol.is(NonMember)) this
-          else derived(symbol.info)
-      }
+      if (!owner.membersNeedAsSeenFrom(pre) || symbol.is(NonMember)) this
+      else derived(symbol.info)
     }
 
     /** Does this denotation have all the `required` flags but none of the `excluded` flags?
@@ -1283,6 +1269,8 @@ object Denotations {
       derivedUnion(denot1 filterDisjoint denot, denot2 filterDisjoint denot)
     def filterWithFlags(required: FlagSet, excluded: FlagSet)(implicit ctx: Context): PreDenotation =
       derivedUnion(denot1.filterWithFlags(required, excluded), denot2.filterWithFlags(required, excluded))
+    def aggregate[T](f: SingleDenotation => T, g: (T, T) => T): T =
+      g(denot1.aggregate(f, g), denot2.aggregate(f, g))
     protected def derivedUnion(denot1: PreDenotation, denot2: PreDenotation) =
       if ((denot1 eq this.denot1) && (denot2 eq this.denot2)) this
       else denot1 union denot2

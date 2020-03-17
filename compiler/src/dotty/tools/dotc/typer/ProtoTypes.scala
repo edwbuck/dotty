@@ -61,6 +61,8 @@ object ProtoTypes {
 
     private def disregardProto(pt: Type)(implicit ctx: Context): Boolean = pt.dealias match {
       case _: OrType => true
+        // Don't constrain results with union types, since comparison with a union
+        // type on the right might commit too early into one side.
       case pt => pt.isRef(defn.UnitClass)
     }
 
@@ -113,10 +115,14 @@ object ProtoTypes {
   }
 
   /** A class marking ignored prototypes that can be revealed by `deepenProto` */
-  case class IgnoredProto(ignored: Type) extends UncachedGroundType with MatchAlways {
-    override def revealIgnored = ignored.revealIgnored
+  case class IgnoredProto(ignored: Type) extends UncachedGroundType with MatchAlways:
+    override def revealIgnored = ignored
     override def deepenProto(implicit ctx: Context): Type = ignored
-  }
+
+  object IgnoredProto:
+    def apply(ignored: Type): IgnoredProto = ignored match
+      case ignored: IgnoredProto => ignored
+      case _ => new IgnoredProto(ignored)
 
   /** A prototype for expressions [] that are part of a selection operation:
    *
@@ -222,7 +228,7 @@ object ProtoTypes {
 
   trait ApplyingProto extends ProtoType   // common trait of ViewProto and FunProto
   trait FunOrPolyProto extends ProtoType { // common trait of PolyProto and FunProto
-    def isGivenApply: Boolean = false
+    def isUsingApply: Boolean = false
   }
 
   class FunProtoState {
@@ -245,21 +251,21 @@ object ProtoTypes {
    *  [](args): resultType
    */
   case class FunProto(args: List[untpd.Tree], resType: Type)(typer: Typer,
-    override val isGivenApply: Boolean, state: FunProtoState = new FunProtoState)(implicit val ctx: Context)
+    override val isUsingApply: Boolean, state: FunProtoState = new FunProtoState)(implicit val ctx: Context)
   extends UncachedGroundType with ApplyingProto with FunOrPolyProto {
     override def resultType(implicit ctx: Context): Type = resType
 
     def isMatchedBy(tp: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean = {
-      val args = unforcedTypedArgs
+      val args = typedArgs()
       def isPoly(tree: Tree) = tree.tpe.widenSingleton.isInstanceOf[PolyType]
       // See remark in normalizedCompatible for why we can't keep the constraint
       // if one of the arguments has a PolyType.
-      typer.isApplicableType(tp, Nil, args, resultType, keepConstraint && !args.exists(isPoly))
+      typer.isApplicableType(tp, args, resultType, keepConstraint && !args.exists(isPoly))
     }
 
     def derivedFunProto(args: List[untpd.Tree] = this.args, resultType: Type, typer: Typer = this.typer): FunProto =
       if ((args eq this.args) && (resultType eq this.resultType) && (typer eq this.typer)) this
-      else new FunProto(args, resultType)(typer, isGivenApply)
+      else new FunProto(args, resultType)(typer, isUsingApply)
 
     /** @return True if all arguments have types.
      */
@@ -301,15 +307,18 @@ object ProtoTypes {
      *  However, any constraint changes are also propagated to the currently passed
      *  context.
      *
+     *  @param norm   a normalization function that is applied to an untyped argument tree
+     *                before it is typed. The second Int parameter is the parameter index.
      */
-    def unforcedTypedArgs(implicit ctx: Context): List[Tree] =
+    def typedArgs(norm: (untpd.Tree, Int) => untpd.Tree = sameTree)(implicit ctx: Context): List[Tree] =
       if (state.typedArgs.size == args.length) state.typedArgs
       else {
         val prevConstraint = this.ctx.typerState.constraint
 
         try {
           implicit val ctx = this.ctx
-          val args1 = args.mapconserve(cacheTypedArg(_, typer.typed(_), force = false))
+          val args1 = args.mapWithIndexConserve((arg, idx) =>
+            cacheTypedArg(arg, arg => typer.typed(norm(arg, idx)), force = false))
           if (!args1.exists(arg => isUndefined(arg.tpe))) state.typedArgs = args1
           args1
         }
@@ -322,9 +331,15 @@ object ProtoTypes {
      *  used to avoid repeated typings of trees when backtracking.
      */
     def typedArg(arg: untpd.Tree, formal: Type)(implicit ctx: Context): Tree = {
+      val wideFormal = formal.widenExpr
+      val argCtx =
+        if wideFormal eq formal then ctx
+        else ctx.withNotNullInfos(ctx.notNullInfos.retractMutables)
       val locked = ctx.typerState.ownedVars
-      val targ = cacheTypedArg(arg, typer.typedUnadapted(_, formal, locked), force = true)
-      typer.adapt(targ, formal, locked)
+      val targ = cacheTypedArg(arg,
+        typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
+        force = true)
+      typer.adapt(targ, wideFormal, locked)
     }
 
     /** The type of the argument `arg`, or `NoType` if `arg` has not been typed before
@@ -340,7 +355,7 @@ object ProtoTypes {
       case pt: FunProto =>
         pt
       case _ =>
-        state.tupled = new FunProto(untpd.Tuple(args) :: Nil, resultType)(typer, isGivenApply)
+        state.tupled = new FunProto(untpd.Tuple(args) :: Nil, resultType)(typer, isUsingApply)
         tupled
     }
 
@@ -369,21 +384,21 @@ object ProtoTypes {
       derivedFunProto(args, tm(resultType), typer)
 
     def fold[T](x: T, ta: TypeAccumulator[T])(implicit ctx: Context): T =
-      ta(ta.foldOver(x, unforcedTypedArgs.tpes), resultType)
+      ta(ta.foldOver(x, typedArgs().tpes), resultType)
 
     override def deepenProto(implicit ctx: Context): FunProto = derivedFunProto(args, resultType.deepenProto, typer)
 
     override def withContext(newCtx: Context): ProtoType =
       if (newCtx `eq` ctx) this
-      else new FunProto(args, resType)(typer, isGivenApply, state)(newCtx)
+      else new FunProto(args, resType)(typer, isUsingApply, state)(newCtx)
   }
 
   /** A prototype for expressions that appear in function position
    *
    *  [](args): resultType, where args are known to be typed
    */
-  class FunProtoTyped(args: List[tpd.Tree], resultType: Type)(typer: Typer, isGivenApply: Boolean)(implicit ctx: Context) extends FunProto(args, resultType)(typer, isGivenApply)(ctx) {
-    override def unforcedTypedArgs(implicit ctx: Context): List[tpd.Tree] = args
+  class FunProtoTyped(args: List[tpd.Tree], resultType: Type)(typer: Typer, isUsingApply: Boolean)(implicit ctx: Context) extends FunProto(args, resultType)(typer, isUsingApply)(ctx) {
+    override def typedArgs(norm: (untpd.Tree, Int) => untpd.Tree)(implicit ctx: Context): List[tpd.Tree] = args
     override def withContext(ctx: Context): FunProtoTyped = this
   }
 
@@ -429,7 +444,7 @@ object ProtoTypes {
   }
 
   class UnapplyFunProto(argType: Type, typer: Typer)(implicit ctx: Context) extends FunProto(
-    untpd.TypedSplice(dummyTreeOfType(argType)(ctx.source))(ctx) :: Nil, WildcardType)(typer, isGivenApply = false)
+    untpd.TypedSplice(dummyTreeOfType(argType)(ctx.source))(ctx) :: Nil, WildcardType)(typer, isUsingApply = false)
 
   /** A prototype for expressions [] that are type-parameterized:
    *
@@ -439,13 +454,12 @@ object ProtoTypes {
 
     override def resultType(implicit ctx: Context): Type = resType
 
-    override def isMatchedBy(tp: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean = {
-      def isInstantiatable(tp: Type) = tp.widen match {
-        case tp: PolyType => tp.paramNames.length == targs.length
-        case _ => false
-      }
-      isInstantiatable(tp) || tp.member(nme.apply).hasAltWith(d => isInstantiatable(d.info))
-    }
+    def canInstantiate(tp: Type)(using Context) = tp.widen match
+      case tp: PolyType => tp.paramNames.length == targs.length
+      case _ => false
+
+    override def isMatchedBy(tp: Type, keepConstraint: Boolean)(implicit ctx: Context): Boolean =
+      canInstantiate(tp) || tp.member(nme.apply).hasAltWith(d => canInstantiate(d.info))
 
     def derivedPolyProto(targs: List[Tree], resultType: Type): PolyProto =
       if ((targs eq this.targs) && (resType eq this.resType)) this
@@ -573,7 +587,7 @@ object ProtoTypes {
       case et: ExprType =>
         normalize(et.resultType, pt)
       case wtp =>
-        val iftp = defn.asImplicitFunctionType(wtp)
+        val iftp = defn.asContextFunctionType(wtp)
         if (iftp.exists) normalize(iftp.dropDependentRefinement.argInfos.last, pt) else tp
     }
   }
@@ -676,4 +690,6 @@ object ProtoTypes {
       case _ => None
     }
   }
+
+  private val sameTree = (t: untpd.Tree, n: Int) => t
 }

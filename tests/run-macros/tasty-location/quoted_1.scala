@@ -1,5 +1,5 @@
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift
 
 case class Location(owners: List[String])
 
@@ -7,7 +7,7 @@ object Location {
 
   implicit inline def location: Location = ${impl}
 
-  def impl(given qctx: QuoteContext): Expr[Location] = {
+  def impl(using qctx: QuoteContext) : Expr[Location] = {
     import qctx.tasty._
 
     def listOwnerNames(sym: Symbol, acc: List[String]): List[String] =

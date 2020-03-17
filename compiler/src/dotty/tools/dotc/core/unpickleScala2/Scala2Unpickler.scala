@@ -69,8 +69,8 @@ object Scala2Unpickler {
       assert(lastArg isRef defn.ArrayClass)
       val elemtp0 :: Nil = lastArg.baseType(defn.ArrayClass).argInfos
       val elemtp = elemtp0 match {
-        case AndType(t1, t2) => // drop intersection with Object for abstract types an parameters in varargs. Erasure can handle them.
-          if (t2.isRef(defn.ObjectClass))
+        case AndType(t1, t2) => // drop intersection with Object for abstract types and parameters in varargs. Erasure can handle them.
+          if t2.isAnyRef then
             t1 match {
               case t1: TypeParamRef => t1
               case t1: TypeRef if t1.symbol.isAbstractOrParamType => t1
@@ -135,7 +135,7 @@ object Scala2Unpickler {
     else
       registerCompanionPair(scalacCompanion, denot.classSymbol)
 
-    tempInfo.finalize(denot, normalizedParents) // install final info, except possibly for typeparams ordering
+    denot.info = tempInfo.finalized(normalizedParents)
     denot.ensureTypeParamsInCorrectOrder()
   }
 }
@@ -598,7 +598,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
                   denot.info matches denot.owner.thisType.memberInfo(alt)
                 }
               val alias = readDisambiguatedSymbolRef(disambiguate).asTerm
-              denot.addAnnotation(Annotation.makeAlias(alias))
+              if alias.name == denot.name then denot.setFlag(SuperParamAlias)
             }
         }
         // println(s"unpickled ${denot.debugString}, info = ${denot.info}") !!! DEBUG

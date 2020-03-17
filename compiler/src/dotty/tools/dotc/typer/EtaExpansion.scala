@@ -14,6 +14,7 @@ import NameKinds.UniqueName
 import util.Spans._
 import collection.mutable
 import Trees._
+import Decorators._
 
 /** A class that handles argument lifting. Argument lifting is needed in the following
  *  scenarios:
@@ -39,6 +40,9 @@ abstract class Lifter {
   /** The tree of a lifted definition */
   protected def liftedDef(sym: TermSymbol, rhs: Tree)(implicit ctx: Context): MemberDef = ValDef(sym, rhs)
 
+  /** Is lifting performed on erased terms? */
+  protected def isErased = false
+
   private def lift(defs: mutable.ListBuffer[Tree], expr: Tree, prefix: TermName = EmptyTermName)(implicit ctx: Context): Tree =
     if (noLift(expr)) expr
     else {
@@ -47,7 +51,10 @@ abstract class Lifter {
       var liftedType = expr.tpe.widen
       if (liftedFlags.is(Method)) liftedType = ExprType(liftedType)
       val lifted = ctx.newSymbol(ctx.owner, name, liftedFlags | Synthetic, liftedType, coord = spanCoord(expr.span))
-      defs += liftedDef(lifted, expr).withSpan(expr.span).setDefTree
+      defs += liftedDef(lifted, expr)
+        .withSpan(expr.span)
+        .changeNonLocalOwners(lifted)
+        .setDefTree
       ref(lifted.termRef).withSpan(expr.span.focus)
     }
 
@@ -103,7 +110,10 @@ abstract class Lifter {
    */
   def liftApp(defs: mutable.ListBuffer[Tree], tree: Tree)(implicit ctx: Context): Tree = tree match {
     case Apply(fn, args) =>
-      cpy.Apply(tree)(liftApp(defs, fn), liftArgs(defs, fn.tpe, args))
+      val fn1 = liftApp(defs, fn)
+      val args1 = liftArgs(defs, fn.tpe, args)
+      if isErased then untpd.cpy.Apply(tree)(fn1, args1).withType(tree.tpe) // application may be partial
+      else cpy.Apply(tree)(fn1, args1)
     case TypeApply(fn, targs) =>
       cpy.TypeApply(tree)(liftApp(defs, fn), targs)
     case Select(pre, name) if isPureRef(tree) =>
@@ -145,6 +155,9 @@ class LiftComplex extends Lifter {
 }
 object LiftComplex extends LiftComplex
 
+object LiftErased extends LiftComplex:
+  override def isErased = true
+
 /** Lift all impure or complex arguments to `def`s */
 object LiftToDefs extends LiftComplex {
   override def liftedFlags: FlagSet = Method
@@ -179,7 +192,7 @@ object EtaExpansion extends LiftImpure {
    *  If `expr` has implicit function type, the arguments are passed with `given`.
    *  E.g. for (1):
    *
-   *      { val xs = es; (x1, ..., xn) => expr given (x1, ..., xn) }
+   *      { val xs = es; (x1, ..., xn) => expr(using x1, ..., xn) }
    *
    *  Case (3) applies if the method is curried, i.e. its result type is again a method
    *  type. Case (2) applies if the expected arity of the function type `xarity` differs
@@ -194,6 +207,19 @@ object EtaExpansion extends LiftImpure {
    *  In each case, the result is an untyped tree, with `es` and `expr` as typed splices.
    *
    *    F[V](x) ==> (x => F[X])
+   *
+   *  Note: We allow eta expanding a method with a call by name parameter like
+   *
+   *    def m(x: => T): T
+   *
+   *  to a value of type (=> T) => T. This type cannot be written in source, since
+   *  by-name types => T are not legal argument types.
+   *
+   *  It would be simpler to not allow to eta expand by-name methods. That was the rule
+   *  initially, but at some point, the rule was dropped. Enforcing the restriction again
+   *  now would break existing code. Allowing by-name parameters in function types seems to
+   *  be OK. After elimByName they are all converted to regular function types anyway.
+   *  But see comment on the `ExprType` case in function `prune` in class `ConstraintHandling`.
    */
   def etaExpand(tree: Tree, mt: MethodType, xarity: Int)(implicit ctx: Context): untpd.Tree = {
     import untpd._
@@ -216,7 +242,7 @@ object EtaExpansion extends LiftImpure {
     if (mt.paramInfos.nonEmpty && mt.paramInfos.last.isRepeatedParam)
       ids = ids.init :+ repeated(ids.last)
     val app = Apply(lifted, ids)
-    if (mt.isContextualMethod) app.setGivenApply()
+    if (mt.isContextualMethod) app.setUsingApply()
     val body = if (isLastApplication) app else PostfixOp(app, Ident(nme.WILDCARD))
     val fn =
       if (mt.isContextualMethod) new untpd.FunctionWithMods(params, body, Modifiers(Given))

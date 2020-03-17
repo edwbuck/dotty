@@ -8,33 +8,36 @@ import dotty.tools.dotc.tastyreflect.ReflectionImpl
 import dotty.tools.io.{AbstractFile, Directory, PlainDirectory, VirtualDirectory}
 import dotty.tools.repl.AbstractFileClassLoader
 import dotty.tools.dotc.reporting._
+import dotty.tools.dotc.util.ClasspathFromClassloader
 import scala.quoted._
 import scala.quoted.staging.Toolbox
-import java.net.URLClassLoader
+import java.io.File
+import scala.annotation.tailrec
 
 /** Driver to compile quoted code
  *
  * @param appClassloader classloader of the application that generated the quotes
  */
-private class QuoteDriver(appClassloader: ClassLoader) extends Driver {
+private class QuoteDriver(appClassloader: ClassLoader) extends Driver:
   import tpd._
 
   private[this] val contextBase: ContextBase = new ContextBase
 
-  def run[T](exprBuilder: QuoteContext => Expr[T], settings: Toolbox.Settings): T = {
-    val outDir: AbstractFile = settings.outDir match {
-      case Some(out) =>
-        val dir = Directory(out)
-        dir.createDirectory()
-        new PlainDirectory(Directory(out))
-      case None =>
-        new VirtualDirectory("<quote compilation output>")
-    }
+  def run[T](exprBuilder: QuoteContext => Expr[T], settings: Toolbox.Settings): T =
+    val outDir: AbstractFile =
+      settings.outDir match
+        case Some(out) =>
+          val dir = Directory(out)
+          dir.createDirectory()
+          new PlainDirectory(Directory(out))
+        case None =>
+          new VirtualDirectory("<quote compilation output>")
+    end outDir
 
     val (_, ctx0: Context) = setup(settings.compilerArgs.toArray :+ "dummy.scala", initCtx.fresh)
     val ctx = setToolboxSettings(ctx0.fresh.setSetting(ctx0.settings.outputDir, outDir), settings)
 
-    new QuoteCompiler().newRun(ctx).compileExpr(exprBuilder) match {
+    new QuoteCompiler().newRun(ctx).compileExpr(exprBuilder) match
       case Right(value) =>
         value.asInstanceOf[T]
 
@@ -48,33 +51,19 @@ private class QuoteDriver(appClassloader: ClassLoader) extends Driver {
         val inst = clazz.getConstructor().newInstance()
 
         method.invoke(inst).asInstanceOf[T]
-    }
-  }
+    end match
 
-  override def initCtx: Context = {
+  end run
+
+  override def initCtx: Context =
     val ictx = contextBase.initialCtx
-    ictx.settings.classpath.update(getCurrentClasspath(appClassloader))(ictx)
+    ictx.settings.classpath.update(ClasspathFromClassloader(appClassloader))(ictx)
     ictx
-  }
 
-  private def setToolboxSettings(ctx: FreshContext, settings: Toolbox.Settings): ctx.type = {
+  private def setToolboxSettings(ctx: FreshContext, settings: Toolbox.Settings): ctx.type =
     ctx.setSetting(ctx.settings.YshowRawQuoteTrees, settings.showRawTree)
     // An error in the generated code is a bug in the compiler
     // Setting the throwing reporter however will report any exception
     ctx.setReporter(new ThrowingReporter(ctx.reporter))
-  }
 
-  private def getCurrentClasspath(cl: ClassLoader): String = {
-    val classpath0 = System.getProperty("java.class.path")
-    cl match {
-      case cl: URLClassLoader =>
-        // Loads the classes loaded by this class loader
-        // When executing `run` or `test` in sbt the classpath is not in the property java.class.path
-        import java.nio.file.Paths
-        val newClasspath = cl.getURLs.map(url => Paths.get(url.toURI).toString)
-        newClasspath.mkString("", java.io.File.pathSeparator, if (classpath0 == "") "" else java.io.File.pathSeparator + classpath0)
-      case _ => classpath0
-    }
-  }
-}
-
+end QuoteDriver

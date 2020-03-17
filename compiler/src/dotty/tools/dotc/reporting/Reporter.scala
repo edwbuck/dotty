@@ -15,6 +15,7 @@ import diagnostic.messages._
 import diagnostic._
 import ast.{tpd, Trees}
 import Message._
+import core.Decorators._
 
 import java.lang.System.currentTimeMillis
 import java.io.{ BufferedReader, PrintWriter }
@@ -108,13 +109,13 @@ trait Reporting { this: Context =>
       else {
         reporter.reportNewFeatureUseSite(featureUseSite)
         s"""
-           |This can be achieved by adding the import clause 'import $fqname'
-           |or by setting the compiler option -language:$feature.
            |See the Scala docs for value $fqname for a discussion
            |why the feature $req be explicitly enabled.""".stripMargin
       }
 
-    val msg = s"$featureDescription $req be enabled\nby making the implicit value $fqname visible.$explain"
+    val msg = s"""$featureDescription $req be enabled
+                 |by adding the import clause 'import $fqname'
+                 |or by setting the compiler option -language:$feature.$explain""".stripMargin
     if (required) error(msg, pos)
     else reportWarning(new FeatureWarning(msg, pos))
   }
@@ -133,8 +134,7 @@ trait Reporting { this: Context =>
   def error(msg: => Message, pos: SourcePosition = NoSourcePosition, sticky: Boolean = false): Unit = {
     val fullPos = addInlineds(pos)
     reporter.report(if (sticky) new StickyError(msg, fullPos) else new Error(msg, fullPos))
-    if (ctx.settings.YdebugError.value)
-      Thread.dumpStack()
+    if ctx.settings.YdebugError.value then Thread.dumpStack()
   }
 
   def error(ex: TypeError, pos: SourcePosition): Unit = {
@@ -144,7 +144,7 @@ trait Reporting { this: Context =>
   }
 
   def errorOrMigrationWarning(msg: => Message, pos: SourcePosition = NoSourcePosition): Unit =
-    if (ctx.scala2Mode) migrationWarning(msg, pos) else error(msg, pos)
+    if (ctx.scala2CompatMode) migrationWarning(msg, pos) else error(msg, pos)
 
   def restrictionError(msg: => Message, pos: SourcePosition = NoSourcePosition): Unit =
     reporter.report {
@@ -204,7 +204,7 @@ abstract class Reporter extends interfaces.ReporterResult {
    *  debugging information (like printing the classpath) is not rendered
    *  invisible due to the max message length.
    */
-  private[this] var _truncationOK: Boolean = true
+  private var _truncationOK: Boolean = true
   def truncationOK: Boolean = _truncationOK
   def withoutTruncating[T](body: => T): T = {
     val saved = _truncationOK
@@ -213,7 +213,7 @@ abstract class Reporter extends interfaces.ReporterResult {
     finally _truncationOK = saved
   }
 
-  private[this] var incompleteHandler: ErrorHandler = defaultIncompleteHandler
+  private var incompleteHandler: ErrorHandler = defaultIncompleteHandler
 
   def withIncompleteHandler[T](handler: ErrorHandler)(op: => T): T = {
     val saved = incompleteHandler
@@ -222,8 +222,8 @@ abstract class Reporter extends interfaces.ReporterResult {
     finally incompleteHandler = saved
   }
 
-  private[this] var _errorCount = 0
-  private[this] var _warningCount = 0
+  private var _errorCount = 0
+  private var _warningCount = 0
 
   /** The number of errors reported by this reporter (ignoring outer reporters) */
   def errorCount: Int = _errorCount
@@ -237,7 +237,7 @@ abstract class Reporter extends interfaces.ReporterResult {
   /** Have warnings been reported by this reporter (ignoring outer reporters)? */
   def hasWarnings: Boolean = warningCount > 0
 
-  private[this] var errors: List[Error] = Nil
+  private var errors: List[Error] = Nil
 
   /** All errors reported by this reporter (ignoring outer reporters) */
   def allErrors: List[Error] = errors
@@ -252,13 +252,13 @@ abstract class Reporter extends interfaces.ReporterResult {
 
   /** Run `op` and return `true` if errors were reported by this reporter.
    */
-  def reportsErrorsFor(op: Context => Unit)(given ctx: Context): Boolean = {
+  def reportsErrorsFor(op: Context => Unit)(using ctx: Context): Boolean = {
     val initial = errorCount
     op(ctx)
     errorCount > initial
   }
 
-  private[this] var reportedFeaturesUseSites = Set[Symbol]()
+  private var reportedFeaturesUseSites = Set[Symbol]()
 
   def isReportedFeatureUseSite(featureTrait: Symbol): Boolean =
     featureTrait.ne(NoSymbol) && reportedFeaturesUseSites.contains(featureTrait)
@@ -308,10 +308,7 @@ abstract class Reporter extends interfaces.ReporterResult {
   /** Returns a string meaning "n elements". */
   protected def countString(n: Int, elements: String): String = n match {
     case 0 => s"no ${elements}s"
-    case 1 => s"one ${elements}"
-    case 2 => s"two ${elements}s"
-    case 3 => s"three ${elements}s"
-    case 4 => s"four ${elements}s"
+    case 1 => s"1 ${elements}"
     case _ => s"$n ${elements}s"
   }
 

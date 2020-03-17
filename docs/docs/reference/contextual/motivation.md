@@ -29,13 +29,13 @@ Particular criticisms are:
 
  3. The syntax of implicit definitions is too minimal. It consists of a single modifier, `implicit`, that can be attached to a large number of language constructs. A problem with this for newcomers is that it conveys mechanism instead of intent. For instance, a typeclass instance is an implicit object or val if unconditional and an implicit def with implicit parameters referring to some class if conditional. This describes precisely what the implicit definitions translate to -- just drop the `implicit` modifier, and that's it! But the cues that define intent are rather indirect and can be easily misread, as demonstrated by the definitions of `i1` and `i2` above.
 
- 4. The syntax of implicit parameters also has shortcomings. It starts with the position of `implicit` as a pseudo-modifier that applies to a whole parameter section instead of a single parameter. This represents an irregular case with respect to the rest of Scala's syntax. Furthermore, while implicit _parameters_ are designated specifically, arguments are not. Passing an argument to an implicit parameter looks like a regular application `f(arg)`. This is problematic because it means there can be confusion regarding what parameter gets instantiated in a call. For instance, in
+ 4. The syntax of implicit parameters also has shortcomings. While implicit _parameters_ are designated specifically, arguments are not. Passing an argument to an implicit parameter looks like a regular application `f(arg)`. This is problematic because it means there can be confusion regarding what parameter gets instantiated in a call. For instance, in
     ```scala
     def currentMap(implicit ctx: Context): Map[String, Int]
     ```
     one cannot write `currentMap("abc")` since the string "abc" is taken as explicit argument to the implicit `ctx` parameter. One has to write `currentMap.apply("abc")` instead, which is awkward and irregular. For the same reason, a method definition can only have one implicit parameter section and it must always come last. This restriction not only reduces orthogonality, but also prevents some useful program constructs, such as a method with a regular parameter whose type depends on an implicit value. Finally, it's also a bit annoying that implicit parameters must have a name, even though in many cases that name is never referenced.
 
- 5. Implicits pose challenges for tooling. The set of available implicits depends on context, so command completion has to take context into account. This is feasible in an IDE but docs like ScalaDoc that are based static web pages can only provide an approximation. Another problem is that failed implicit searches often give very unspecific error messages, in particular if some deeply recursive implicit search has failed. Note that the Dotty compiler already implements some improvements in this case, but challenges still remain.
+ 5. Implicits pose challenges for tooling. The set of available implicits depends on context, so command completion has to take context into account. This is feasible in an IDE but docs like ScalaDoc that are based static web pages can only provide an approximation. Another problem is that failed implicit searches often give very unspecific error messages, in particular if some deeply recursive implicit search has failed. Note that the Dotty compiler has already made a lot of progress in the error diagnostics area. If a recursive search fails some levels down, it shows what was constructed and what is missing. Also, it suggests imports that can bring missing implicits in scope.
 
 None of the shortcomings is fatal, after all implicits are very widely used, and many libraries and applications rely on them. But together, they make code using implicits a lot more cumbersome and less clear than it could be.
 
@@ -47,11 +47,12 @@ Existing Scala programmers by and large have gotten used to the status quo and s
 
 The following pages introduce a redesign of contextual abstractions in Scala. They introduce four fundamental changes:
 
- 1. [Given Instances](./delegates.md) are a new way to define basic terms that can be synthesized.  They replace implicit definitions. The core principle of the proposal is that, rather than mixing the `implicit` modifier with a large number of features, we have a single way to define terms that can be synthesized for types.
+ 1. [Given Instances](./givens.md) are a new way to define basic terms that can be synthesized.  They replace implicit definitions. The core principle of the proposal is that, rather than mixing the `implicit` modifier with a large number of features, we have a single way to define terms that can be synthesized for types.
 
- 2. [Given Clauses](./given-clauses.md) are a new syntax for implicit _parameters_ and their _arguments_. Both are introduced with the same keyword, `given`. This unambiguously aligns parameters and arguments, solving a number of language warts. It also allows us to have several implicit parameter sections, and to have implicit parameters followed by normal ones.
+ 2. [Using Clauses](./using-clauses.md) are a new syntax for implicit _parameters_ and their _arguments_. It unambiguously aligns parameters and arguments, solving a number of language warts. It also allows us to have several `using` clauses in a definition.
 
- 3. [Given Imports](./import-delegate.md) are a new class of imports that specifically import given instances and nothing else. Given instances _must be_ imported with  `import given`, a plain import will no longer bring them into scope.
+ 3. ["Given" Imports](./given-imports.md) are a new class of import selectors that specifically import
+    givens and nothing else.
 
  4. [Implicit Conversions](./conversions.md) are now expressed as given instances of a standard `Conversion` class. All other forms of implicit conversions will be phased out.
 
@@ -62,11 +63,11 @@ This section also contains pages describing other language features that are rel
  - [Implementing Typeclasses](./typeclasses.md) demonstrates how some common typeclasses can be implemented using the new constructs.
  - [Typeclass Derivation](./derivation.md) introduces constructs to automatically derive typeclass instances for ADTs.
  - [Multiversal Equality](./multiversal-equality.md) introduces a special typeclass to support type safe equality.
- - [Implicit Function Types](./implicit-function-types.md) provide a way to abstract over given clauses.
- - [Implicit By-Name Parameters](./implicit-by-name-parameters.md) are an essential tool to define recursive synthesized values without looping.
+ - [Context Functions](./context-functions.md) provide a way to abstract over context parameters.
+ - [By-Name Context Parameters](./by-name-context-parameters.md) are an essential tool to define recursive synthesized values without looping.
  - [Relationship with Scala 2 Implicits](./relationship-implicits.md) discusses the relationship between old-style implicits and new-style givens and how to migrate from one to the other.
 
-Overall, the new design achieves a better separation of term inference from the rest of the language: There is a single way to define given instances instead of a multitude of forms all taking an `implicit` modifier. There is a single way to introduce implicit parameters and arguments instead of conflating implicit with normal arguments. There is a separate way to import given instances that does not allow them to hide in a sea of normal imports. And there is a single way to define an implicit conversion which is clearly marked as such and does not require special syntax.
+Overall, the new design achieves a better separation of term inference from the rest of the language: There is a single way to define givens instead of a multitude of forms all taking an `implicit` modifier. There is a single way to introduce implicit parameters and arguments instead of conflating implicit with normal arguments. There is a separate way to import givens that does not allow them to hide in a sea of normal imports. And there is a single way to define an implicit conversion which is clearly marked as such and does not require special syntax.
 
 This design thus avoids feature interactions and makes the language more consistent and orthogonal. It will make implicits easier to learn and harder to abuse. It will greatly improve the clarity of the 95% of Scala programs that use implicits. It has thus the potential to fulfil the promise of term inference in a principled way that is also accessible and friendly.
 

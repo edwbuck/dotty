@@ -10,7 +10,7 @@ import util.Spans.Span
 
 object Annotations {
 
-  def annotClass(tree: Tree)(given Context) =
+  def annotClass(tree: Tree)(using Context) =
     if (tree.symbol.isConstructor) tree.symbol.owner
     else tree.tpe.typeSymbol
 
@@ -51,7 +51,7 @@ object Annotations {
     override def symbol(implicit ctx: Context): Symbol
     def complete(implicit ctx: Context): Tree
 
-    private[this] var myTree: Tree = null
+    private var myTree: Tree = null
     def tree(implicit ctx: Context): Tree = {
       if (myTree == null) myTree = complete(ctx)
       myTree
@@ -78,8 +78,8 @@ object Annotations {
 
   case class LazyBodyAnnotation(private var bodyExpr: Context => Tree) extends BodyAnnotation {
     // TODO: Make `bodyExpr` an IFT once #6865 os in bootstrap
-    private[this] var evaluated = false
-    private[this] var myBody: Tree = _
+    private var evaluated = false
+    private var myBody: Tree = _
     def tree(implicit ctx: Context): Tree = {
       if (evaluated) assert(myBody != null)
       else {
@@ -118,25 +118,25 @@ object Annotations {
       apply(New(atp, args))
 
     /** Create an annotation where the tree is computed lazily. */
-    def deferred(sym: Symbol)(treeFn: ImplicitFunction1[Context, Tree])(implicit ctx: Context): Annotation =
+    def deferred(sym: Symbol)(treeFn: Context ?=> Tree)(implicit ctx: Context): Annotation =
       new LazyAnnotation {
         override def symbol(implicit ctx: Context): Symbol = sym
-        def complete(implicit ctx: Context) = treeFn(given ctx)
+        def complete(implicit ctx: Context) = treeFn(using ctx)
       }
 
     /** Create an annotation where the symbol and the tree are computed lazily. */
-    def deferredSymAndTree(symf: ImplicitFunction1[Context, Symbol])(treeFn: ImplicitFunction1[Context, Tree])(implicit ctx: Context): Annotation =
+    def deferredSymAndTree(symf: Context ?=> Symbol)(treeFn: Context ?=> Tree)(implicit ctx: Context): Annotation =
       new LazyAnnotation {
-        private[this] var mySym: Symbol = _
+        private var mySym: Symbol = _
 
         override def symbol(implicit ctx: Context): Symbol = {
           if (mySym == null || mySym.defRunId != ctx.runId) {
-            mySym = symf(given ctx)
+            mySym = symf(using ctx)
             assert(mySym != null)
           }
           mySym
         }
-        def complete(implicit ctx: Context) = treeFn(given ctx)
+        def complete(implicit ctx: Context) = treeFn(using ctx)
       }
 
     def deferred(atp: Type, args: List[Tree])(implicit ctx: Context): Annotation =
@@ -145,21 +145,17 @@ object Annotations {
     def deferredResolve(atp: Type, args: List[Tree])(implicit ctx: Context): Annotation =
       deferred(atp.classSymbol)(resolveConstructor(atp, args))
 
-    def makeAlias(sym: TermSymbol)(implicit ctx: Context): Annotation =
-      apply(defn.AliasAnnot, List(
-        ref(TermRef(sym.owner.thisType, sym.name, sym))))
-
     /** Extractor for child annotations */
     object Child {
 
       /** A deferred annotation to the result of a given child computation */
-      def later(delayedSym: ImplicitFunction1[Context, Symbol], span: Span)(implicit ctx: Context): Annotation = {
-        def makeChildLater(implicit ctx: Context) = {
+      def later(delayedSym: Context ?=> Symbol, span: Span)(implicit ctx: Context): Annotation = {
+        def makeChildLater(using ctx: Context) = {
           val sym = delayedSym
           New(defn.ChildAnnot.typeRef.appliedTo(sym.owner.thisType.select(sym.name, sym)), Nil)
             .withSpan(span)
         }
-        deferred(defn.ChildAnnot)(makeChildLater(ctx))
+        deferred(defn.ChildAnnot)(makeChildLater)
       }
 
       /** A regular, non-deferred Child annotation */
@@ -169,22 +165,6 @@ object Annotations {
         if (ann.symbol == defn.ChildAnnot) {
           val AppliedType(_, (arg: NamedType) :: Nil) = ann.tree.tpe
           Some(arg.symbol)
-        }
-        else None
-    }
-
-    /** Extractor for WithBounds[T] annotations */
-    object WithBounds {
-      def unapply(ann: Annotation)(implicit ctx: Context): Option[TypeBounds] =
-        if (ann.symbol == defn.WithBoundsAnnot) {
-          import ast.Trees._
-          // We need to extract the type of the type tree in the New itself.
-          // The annotation's type has been simplified as the type of an expression,
-          // which means that `&` or `|` might have been lost.
-          // Test in pos/reference/opaque.scala
-          val Apply(TypeApply(Select(New(tpt), nme.CONSTRUCTOR), _), Nil) = ann.tree
-          val AppliedType(_, lo :: hi :: Nil) = tpt.tpe
-          Some(TypeBounds(lo, hi))
         }
         else None
     }

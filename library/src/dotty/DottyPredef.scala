@@ -3,22 +3,22 @@ package dotty
 object DottyPredef {
   import compiletime.summonFrom
 
-  @forceInline final def assert(assertion: => Boolean, message: => Any): Unit = {
+  inline final def assert(assertion: => Boolean, message: => Any): Unit = {
     if (!assertion)
       assertFail(message)
   }
 
-  @forceInline final def assert(assertion: => Boolean): Unit = {
+  inline final def assert(inline assertion: => Boolean) <: Unit = {
     if (!assertion)
       assertFail()
   }
 
-  def assertFail(): Unit = throw new java.lang.AssertionError("assertion failed")
-  def assertFail(message: => Any): Unit = throw new java.lang.AssertionError("assertion failed: " + message)
+  def assertFail(): Nothing = throw new java.lang.AssertionError("assertion failed")
+  def assertFail(message: => Any): Nothing = throw new java.lang.AssertionError("assertion failed: " + message)
 
-  @forceInline final def implicitly[T](implicit ev: T): T = ev
+  inline final def implicitly[T](implicit ev: T): T = ev
 
-  @forceInline def locally[T](body: => T): T = body
+  inline def locally[T](body: => T): T = body
 
   /**
    * Retrieve the single value of a type with a unique inhabitant.
@@ -37,5 +37,23 @@ object DottyPredef {
     case ev: ValueOf[T] => ev.value
   }
 
-  inline def summon[T](given x: T): x.type = x
+  /** Summon a given value of type `T`. Usually, the argument is not passed explicitly.
+   *
+   *  @tparam T the type of the value to be summoned
+   *  @return the given value typed as the provided type parameter
+   */
+  inline def summon[T](using x: T): x.type = x
+
+  // Extension methods for working with explicit nulls
+
+  /** Strips away the nullability from a value.
+   *  e.g.
+   *    val s1: String|Null = "hello"
+   *    val s: String = s1.nn
+   *
+   *  Note that `.nn` performs a checked cast, so if invoked on a null value it'll throw an NPE.
+   */
+  def[T] (x: T|Null) nn: x.type & T =
+    if (x == null) throw new NullPointerException("tried to cast away nullability, but value is null")
+    else x.asInstanceOf[x.type & T]
 }

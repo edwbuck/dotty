@@ -155,26 +155,8 @@ final class ProperGadtConstraint private(
           else if (isUpper) addLess(symTvar.origin, boundTvar.origin)
           else addLess(boundTvar.origin, symTvar.origin)
         case bound =>
-          val oldUpperBound = bounds(symTvar.origin)
-          // If we have bounds:
-          //     F >: [t] => List[t] <: [t] => Any
-          // and we want to record that:
-          //     F <: [+A] => List[A]
-          // we need to adapt the variance and instead record that:
-          //     F <: [A] => List[A]
-          // We cannot record the original bound, since it is false that:
-          //     [t] => List[t]  <:  [+A] => List[A]
-          //
-          // Note that the following code is accepted:
-          //     class Foo[F[t] >: List[t]]
-          //     type T = Foo[List]
-          // precisely because Foo[List] is desugared to Foo[[A] => List[A]].
-          //
-          // Ideally we'd adapt the bound in ConstraintHandling#addOneBound,
-          // but doing it there actually interferes with type inference.
-          val bound1 = bound.adaptHkVariances(oldUpperBound)
-          if (isUpper) addUpperBound(symTvar.origin, bound1)
-          else addLowerBound(symTvar.origin, bound1)
+          if (isUpper) addUpperBound(symTvar.origin, bound)
+          else addLowerBound(symTvar.origin, bound)
       }
     ).reporting({
       val descr = if (isUpper) "upper" else "lower"
@@ -261,16 +243,16 @@ final class ProperGadtConstraint private(
 
   // ---- Private ----------------------------------------------------------
 
-  private[this] def externalize(param: TypeParamRef)(implicit ctx: Context): Type =
+  private def externalize(param: TypeParamRef)(implicit ctx: Context): Type =
     reverseMapping(param) match {
       case sym: Symbol => sym.typeRef
       case null => param
     }
 
-  private[this] def tvarOrError(sym: Symbol)(implicit ctx: Context): TypeVar =
+  private def tvarOrError(sym: Symbol)(implicit ctx: Context): TypeVar =
     mapping(sym).ensuring(_ ne null, i"not a constrainable symbol: $sym")
 
-  private[this] def containsNoInternalTypes(
+  private def containsNoInternalTypes(
     tp: Type,
     acc: TypeAccumulator[Boolean] = null
   )(implicit ctx: Context): Boolean = tp match {
@@ -280,7 +262,7 @@ final class ProperGadtConstraint private(
       (if (acc ne null) acc else new ContainsNoInternalTypesAccumulator()).foldOver(true, tp)
   }
 
-  private[this] class ContainsNoInternalTypesAccumulator(implicit ctx: Context) extends TypeAccumulator[Boolean] {
+  private class ContainsNoInternalTypesAccumulator(implicit ctx: Context) extends TypeAccumulator[Boolean] {
     override def apply(x: Boolean, tp: Type): Boolean = x && containsNoInternalTypes(tp)
   }
 

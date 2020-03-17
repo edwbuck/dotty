@@ -1,11 +1,11 @@
 import scala.quoted._
-import scala.quoted.matching._
+
 
 object Macros {
 
-  inline def (self: => StringContext) xyz(args: => String*): String = ${impl('self, 'args)}
+  inline def (inline self: StringContext) xyz(args: => String*): String = ${impl('self, 'args)}
 
-  private def impl(self: Expr[StringContext], args: Expr[Seq[String]])(given QuoteContext): Expr[String] = {
+  private def impl(self: Expr[StringContext], args: Expr[Seq[String]])(using QuoteContext): Expr[String] = {
     self match {
       case '{ StringContext($parts: _*) } =>
         '{

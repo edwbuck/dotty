@@ -362,7 +362,7 @@ abstract class BTypes {
    *
    *  - Initializer block (JLS 8.6 / 8.7): block of statements in a java class
    *    - static initializer: executed before constructor body
-   *    - instance initializer: exectued when class is initialized (instance creation, static
+   *    - instance initializer: executed when class is initialized (instance creation, static
    *      field access, ...)
    *
    *  - A static nested class can be defined as
@@ -445,7 +445,7 @@ abstract class BTypes {
    * local and anonymous classes, no matter if there is an enclosing method or not. Accordingly, the
    * "class" field (see below) must be always defined, while the "method" field may be null.
    *
-   * NOTE: When a EnclosingMethod attribute is requried (local and anonymous classes), the "outer"
+   * NOTE: When a EnclosingMethod attribute is required (local and anonymous classes), the "outer"
    * field in the InnerClass table must be null.
    *
    * Fields:

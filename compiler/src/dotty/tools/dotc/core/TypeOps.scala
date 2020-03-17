@@ -19,6 +19,7 @@ import typer.Applications._
 import typer.ProtoTypes._
 import typer.ForceDegree
 import typer.Inferencing.isFullyDefined
+import typer.IfBottom
 
 import scala.annotation.internal.sharable
 
@@ -81,7 +82,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
                   // called which we override to set the `approximated` flag.
                   range(defn.NothingType, pre)
               else pre
-            else if ((pre.termSymbol is Package) && !(thiscls is Package))
+            else if (pre.termSymbol.is(Package) && !thiscls.is(Package))
               toPrefix(pre.select(nme.PACKAGE), cls, thiscls)
             else
               toPrefix(pre.baseType(cls).normalizedPrefix, cls.owner, thiscls)
@@ -198,13 +199,18 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
     def mergeRefinedOrApplied(tp1: Type, tp2: Type): Type = {
       def fail = throw new AssertionError(i"Failure to join alternatives $tp1 and $tp2")
+      def fallback = tp2 match
+        case AndType(tp21, tp22) =>
+          mergeRefinedOrApplied(tp1, tp21) & mergeRefinedOrApplied(tp1, tp22)
+        case _ =>
+          fail
       tp1 match {
         case tp1 @ RefinedType(parent1, name1, rinfo1) =>
           tp2 match {
             case RefinedType(parent2, `name1`, rinfo2) =>
               tp1.derivedRefinedType(
                 mergeRefinedOrApplied(parent1, parent2), name1, rinfo1 | rinfo2)
-            case _ => fail
+            case _ => fallback
           }
         case tp1 @ AppliedType(tycon1, args1) =>
           tp2 match {
@@ -212,14 +218,16 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
               tp1.derivedAppliedType(
                 mergeRefinedOrApplied(tycon1, tycon2),
                 ctx.typeComparer.lubArgs(args1, args2, tycon1.typeParams))
-            case _ => fail
+            case _ => fallback
           }
         case tp1 @ TypeRef(pre1, _) =>
           tp2 match {
             case tp2 @ TypeRef(pre2, _) if tp1.name eq tp2.name =>
               tp1.derivedSelect(pre1 | pre2)
-            case _ => fail
+            case _ => fallback
           }
+        case AndType(tp11, tp12) =>
+          mergeRefinedOrApplied(tp11, tp2) & mergeRefinedOrApplied(tp12, tp2)
         case _ => fail
       }
     }
@@ -362,14 +370,16 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
    *  In fact the current treatment for this sitiuation can so far only be classified as "not obviously wrong",
    *  (maybe it still needs to be revised).
    */
-  def boundsViolations(args: List[Tree], boundss: List[TypeBounds], instantiate: (Type, List[Type]) => Type, app: Type)(implicit ctx: Context): List[BoundsViolation] = {
+  def boundsViolations(args: List[Tree], boundss: List[TypeBounds],
+      instantiate: (Type, List[Type]) => Type, app: Type)(
+      implicit ctx: Context): List[BoundsViolation] = {
     val argTypes = args.tpes
 
     /** Replace all wildcards in `tps` with `<app>#<tparam>` where `<tparam>` is the
      *  type parameter corresponding to the wildcard.
      */
     def skolemizeWildcardArgs(tps: List[Type], app: Type) = app match {
-      case AppliedType(tycon, args) if tycon.typeSymbol.isClass && !scala2Mode =>
+      case AppliedType(tycon: TypeRef, args) if tycon.typeSymbol.isClass && !scala2CompatMode =>
         tps.zipWithConserve(tycon.typeSymbol.typeParams) {
           (tp, tparam) => tp match {
             case _: TypeBounds => app.select(tparam)
@@ -457,6 +467,9 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
   /** Are we in an inline method body? */
   def inInlineMethod: Boolean = owner.ownersIterator.exists(_.isInlineMethod)
 
+  /** Are we in a macro? */
+  def inMacro: Boolean = owner.ownersIterator.exists(s => s.isInlineMethod && s.is(Macro))
+
   /** Is `feature` enabled in class `owner`?
    *  This is the case if one of the following two alternatives holds:
    *
@@ -488,7 +501,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
         if (!sym.exists) ""
         else toPrefix(sym.owner) + sym.name + "."
       val featureName = toPrefix(owner) + feature
-      ctx.base.settings.language.value exists (s => s == featureName || s == "_")
+      ctx.base.settings.language.value exists (s => s == featureName)
     }
     hasOption || hasImport
   }
@@ -497,25 +510,25 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
   def canAutoTuple: Boolean =
     !featureEnabled(nme.noAutoTupling)
 
-  def scala2Mode: Boolean =
-    featureEnabled(nme.Scala2)
+  def scala2CompatMode: Boolean =
+    featureEnabled(nme.Scala2Compat)
 
   def dynamicsEnabled: Boolean =
     featureEnabled(nme.dynamics)
 
-  def testScala2Mode(msg: => Message, pos: SourcePosition, replace: => Unit = ()): Boolean = {
-    if (scala2Mode) {
+  def testScala2CompatMode(msg: => Message, pos: SourcePosition, replace: => Unit = ()): Boolean = {
+    if (scala2CompatMode) {
       migrationWarning(msg, pos)
       replace
     }
-    scala2Mode
+    scala2CompatMode
   }
 
-  /** Is option -language:Scala2 set?
+  /** Is option -language:Scala2Compat set?
    *  This test is used when we are too early in the pipeline to consider imports.
    */
-  def scala2Setting: Boolean =
-    ctx.settings.language.value.contains(nme.Scala2.toString)
+  def scala2CompatSetting: Boolean =
+    ctx.settings.language.value.contains(nme.Scala2Compat.toString)
 
   /** Refine child based on parent
    *
@@ -552,17 +565,17 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
     val childTp = if (child.isTerm) child.termRef else child.typeRef
 
-    instantiate(childTp, parent)(ctx.fresh.setNewTyperState()).dealias
+    instantiateToSubType(childTp, parent)(ctx.fresh.setNewTyperState()).dealias
   }
 
   /** Instantiate type `tp1` to be a subtype of `tp2`
    *
-   *  Return the instantiated type if type parameters and this type
+   *  Return the instantiated type if type parameters in this type
    *  in `tp1` can be instantiated such that `tp1 <:< tp2`.
    *
    *  Otherwise, return NoType.
    */
-  private def instantiate(tp1: NamedType, tp2: Type)(implicit ctx: Context): Type = {
+  private def instantiateToSubType(tp1: NamedType, tp2: Type)(implicit ctx: Context): Type = {
     /** expose abstract type references to their bounds or tvars according to variance */
     class AbstractTypeMap(maximize: Boolean)(implicit ctx: Context) extends TypeMap {
       def expose(lo: Type, hi: Type): Type =
@@ -634,8 +647,7 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
       tvar =>
         !(ctx.typerState.constraint.entry(tvar.origin) `eq` tvar.origin.underlying) ||
         (tvar `eq` removeThisType.prefixTVar),
-      minimizeAll = false,
-      allowBottom = false
+      IfBottom.flip
     )
 
     // If parent contains a reference to an abstract type, then we should

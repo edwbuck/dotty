@@ -13,7 +13,7 @@ class InlineBytecodeTests extends DottyBytecodeTest {
     val source = """
                  |class Foo {
                  |  inline def foo: Int = 1
-                 |  @forceInline def bar: Int = 1
+                 |  inline def bar: Int = 1
                  |
                  |  def meth1: Unit = foo
                  |  def meth2: Unit = bar
@@ -44,7 +44,7 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947 = {
     val source = """class Foo {
-                   |  inline def track[T](f: => T) <: T = {
+                   |  inline def track[T](inline f: T) <: T = {
                    |    foo("tracking") // line 3
                    |    f // line 4
                    |  }
@@ -103,11 +103,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947b = {
     val source = """class Foo {
-                   |  inline def track2[T](f: => T) <: T = {
+                   |  inline def track2[T](inline f: T) <: T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  inline def track[T](f: => T) <: T = {
+                   |  inline def track[T](inline f: T) <: T = {
                    |    foo("tracking") // line 7
                    |    track2 { // line 8
                    |      f // line 9
@@ -163,11 +163,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947c = {
     val source = """class Foo {
-                   |  inline def track2[T](f: => T) <: T = {
+                   |  inline def track2[T](inline f: T) <: T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  inline def track[T](f: => T) <: T = {
+                   |  inline def track[T](inline f: T) <: T = {
                    |    track2 { // line 7
                    |      foo("fgh") // line 8
                    |      f // line 9
@@ -223,11 +223,11 @@ class InlineBytecodeTests extends DottyBytecodeTest {
 
   @Test def i4947d = {
     val source = """class Foo {
-                   |  inline def track2[T](f: => T) <: T = {
+                   |  inline def track2[T](inline f: T) <: T = {
                    |    foo("tracking2") // line 3
                    |    f // line 4
                    |  }
-                   |  inline def track[T](f: => T) <: T = {
+                   |  inline def track[T](inline f: T) <: T = {
                    |    track2 { // line 7
                    |      track2 { // line 8
                    |        f // line 9
@@ -317,6 +317,42 @@ class InlineBytecodeTests extends DottyBytecodeTest {
         )
       assert(instructions == expected,
         "`f` was not properly inlined in `fun`\n" + diffInstructions(instructions, expected))
+
+    }
+  }
+
+  @Test def i6375 = {
+    val source = """class Test:
+                   |  given Int = 0
+                   |  def f(): Int ?=> Boolean = true : (Int ?=> Boolean)
+                   |  inline def g(): Int ?=> Boolean = true
+                   |  def test = g()
+                 """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn      = dir.lookupName("Test.class", directory = false).input
+      val clsNode    = loadClassNode(clsIn)
+
+      val fun = getMethod(clsNode, "test")
+      val instructions = instructionsFromMethod(fun)
+      val expected =
+        List(
+          // Head tested separatly
+          VarOp(ALOAD, 0),
+          Invoke(INVOKEVIRTUAL, "Test", "given_Int", "()I", false),
+          Invoke(INVOKESTATIC, "scala/runtime/BoxesRunTime", "boxToInteger", "(I)Ljava/lang/Integer;", false),
+          Invoke(INVOKEINTERFACE, "dotty/runtime/function/JFunction1$mcZI$sp", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;", true),
+          Invoke(INVOKESTATIC, "scala/runtime/BoxesRunTime", "unboxToBoolean", "(Ljava/lang/Object;)Z", false),
+          Op(IRETURN)
+        )
+
+      instructions.head match {
+        case InvokeDynamic(INVOKEDYNAMIC, "apply$mcZI$sp", "()Ldotty/runtime/function/JFunction1$mcZI$sp;", _, _) =>
+        case _ => assert(false, "`g` was not properly inlined in `test`\n")
+      }
+
+      assert(instructions.tail == expected,
+        "`fg was not properly inlined in `test`\n" + diffInstructions(instructions.tail, expected))
 
     }
   }

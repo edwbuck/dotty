@@ -132,7 +132,22 @@ object Formatting {
         alts = entry :: existing
         update(key, alts)
       }
-      str + "'" * (alts.length - 1)
+      val suffix = alts.length match {
+        case 1 => ""
+        case n => n.toString.toCharArray.map {
+          case '0' => '⁰'
+          case '1' => '¹'
+          case '2' => '²'
+          case '3' => '³'
+          case '4' => '⁴'
+          case '5' => '⁵'
+          case '6' => '⁶'
+          case '7' => '⁷'
+          case '8' => '⁸'
+          case '9' => '⁹'
+        }.mkString
+      }
+      str + suffix
     }
   }
 
@@ -252,9 +267,9 @@ object Formatting {
     * ex"disambiguate $tpe1 and $tpe2"
     * ```
     */
-  def explained(op: ImplicitFunction1[Context, String])(implicit ctx: Context): String = {
+  def explained(op: Context ?=> String)(implicit ctx: Context): String = {
     val seen = new Seen
-    val msg = op(given explainCtx(seen))
+    val msg = op(using explainCtx(seen))
     val addendum = explanations(seen)
     if (addendum.isEmpty) msg else msg ++ "\n\n" ++ addendum
   }

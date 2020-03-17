@@ -131,19 +131,19 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
   /** This cache is necessary for correctness, see the comment about inherited
    *  members in `apiClassStructure`
    */
-  private[this] val classLikeCache = new mutable.HashMap[ClassSymbol, api.ClassLikeDef]
+  private val classLikeCache = new mutable.HashMap[ClassSymbol, api.ClassLikeDef]
   /** This cache is optional, it avoids recomputing representations */
-  private[this] val typeCache = new mutable.HashMap[Type, api.Type]
+  private val typeCache = new mutable.HashMap[Type, api.Type]
   /** This cache is necessary to avoid unstable name hashing when `typeCache` is present,
    *  see the comment in the `RefinedType` case in `computeType`
    *  The cache key is (api of RefinedType#parent, api of RefinedType#refinedInfo).
     */
-  private[this] val refinedTypeCache = new mutable.HashMap[(api.Type, api.Definition), api.Structure]
+  private val refinedTypeCache = new mutable.HashMap[(api.Type, api.Definition), api.Structure]
 
-  private[this] val allNonLocalClassesInSrc = new mutable.HashSet[xsbti.api.ClassLike]
-  private[this] val _mainClasses = new mutable.HashSet[String]
+  private val allNonLocalClassesInSrc = new mutable.HashSet[xsbti.api.ClassLike]
+  private val _mainClasses = new mutable.HashSet[String]
 
-  private[this] object Constants {
+  private object Constants {
     val emptyStringArray = Array[String]()
     val local            = api.ThisQualifier.create()
     val public           = api.Public.create()
@@ -545,7 +545,7 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
   }
 
   def apiTypeParameter(tparam: ParamInfo): api.TypeParameter =
-    apiTypeParameter(tparam.paramName.toString, tparam.paramVariance,
+    apiTypeParameter(tparam.paramName.toString, tparam.paramVarianceSign,
       tparam.paramInfo.bounds.lo, tparam.paramInfo.bounds.hi)
 
   def apiTypeParameter(name: String, variance: Int, lo: Type, hi: Type): api.TypeParameter =
@@ -583,8 +583,8 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
 
   def apiModifiers(sym: Symbol): api.Modifiers = {
     val absOver = sym.is(AbsOverride)
-    val abs = sym.is(Abstract) || sym.is(Deferred) || absOver
-    val over = sym.is(Override) || absOver
+    val abs = absOver || sym.isOneOf(Trait | Abstract | Deferred)
+    val over = absOver || sym.is(Override)
     new api.Modifiers(abs, over, sym.is(Final), sym.is(Sealed),
       sym.isOneOf(GivenOrImplicit), sym.is(Lazy), sym.is(Macro), sym.isSuperAccessor)
   }
@@ -595,12 +595,11 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
     if (!inlineBody.isEmpty) {
       // FIXME: If the body of an inlineable method changes, all the reverse
       // dependencies of this method need to be recompiled. sbt has no way
-      // of tracking method bodies, so as a hack we include the pretty-printed
-      // typed tree of the method as part of the signature we send to sbt.
+      // of tracking method bodies, so as a hack we include the printed
+      // tree of the method as part of the signature we send to sbt.
       // To do this properly we would need a way to hash trees and types in
       // dotty itself.
-      val printTypesCtx = ctx.fresh.setSetting(ctx.settings.XprintTypes, true)
-      annots += marker(inlineBody.show(printTypesCtx))
+      annots += marker(inlineBody.toString)
     }
 
     // In the Scala2 ExtractAPI phase we only extract annotations that extend
@@ -618,12 +617,12 @@ private class ExtractAPICollector(implicit val ctx: Context) extends ThunkHolder
     // FIXME: To faithfully extract an API we should extract the annotation tree,
     // sbt instead wants us to extract the annotation type and its arguments,
     // to do this properly we would need a way to hash trees and types in dotty itself,
-    // instead we pretty-print the annotation tree.
+    // instead we use the raw string representation of the annotation tree.
     // However, we still need to extract the annotation type in the way sbt expect
     // because sbt uses this information to find tests to run (for example
     // junit tests are annotated @org.junit.Test).
     api.Annotation.of(
       apiType(annot.tree.tpe), // Used by sbt to find tests to run
-      Array(api.AnnotationArgument.of("FULLTREE", annot.tree.show)))
+      Array(api.AnnotationArgument.of("FULLTREE", annot.tree.toString)))
   }
 }

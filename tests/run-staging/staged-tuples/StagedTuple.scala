@@ -2,6 +2,8 @@ package scala.internal
 
 import scala.quoted._
 
+import scala.runtime.TupleXXL
+
 object StagedTuple {
   import Tuple.Concat
   import Tuple.Head
@@ -12,7 +14,7 @@ object StagedTuple {
 
   private final val specialize = true
 
-  def toArrayStaged(tup: Expr[Tuple], size: Option[Int])(given QuoteContext): Expr[Array[Object]] = {
+  def toArrayStaged(tup: Expr[Tuple], size: Option[Int])(using QuoteContext): Expr[Array[Object]] = {
     if (!specialize) '{dynamicToArray($tup)}
     else size match {
       case Some(0) =>
@@ -25,8 +27,6 @@ object StagedTuple {
         tup.as[Tuple3[Object, Object, Object]].bind(t => '{Array($t._1, $t._2, $t._3)})
       case Some(4) =>
         tup.as[Tuple4[Object, Object, Object, Object]].bind(t => '{Array($t._1, $t._2, $t._3, $t._4)})
-      case Some(n) if n <= MaxSpecialized =>
-        '{to$Array($tup, ${ n.toExpr })}
       case Some(n) =>
         '{ ${tup.as[TupleXXL]}.toArray }
       case None =>
@@ -34,7 +34,7 @@ object StagedTuple {
     }
   }
 
-  def fromArrayStaged[T <: Tuple : Type](xs: Expr[Array[Object]], size: Option[Int])(given QuoteContext): Expr[T] = {
+  def fromArrayStaged[T <: Tuple : Type](xs: Expr[Array[Object]], size: Option[Int])(using QuoteContext): Expr[T] = {
     if (!specialize) '{dynamicFromArray[T]($xs)}
     else xs.bind { xs =>
       val tup: Expr[Any] = size match {
@@ -68,18 +68,18 @@ object StagedTuple {
     }
   }
 
-  def sizeStaged[Res <: Int : Type](tup: Expr[Tuple], size: Option[Int])(given QuoteContext): Expr[Res] = {
+  def sizeStaged[Res <: Int : Type](tup: Expr[Tuple], size: Option[Int])(using QuoteContext): Expr[Res] = {
     val res =
       if (!specialize) '{dynamicSize($tup)}
       else size match {
-        case Some(n) => n.toExpr
+        case Some(n) => Expr(n)
         case None => '{dynamicSize($tup)}
       }
     res.as[Res]
   }
 
-  def headStaged[Tup <: NonEmptyTuple : Type](tup: Expr[Tup], size: Option[Int])(given QuoteContext): Expr[Head[Tup]] = {
-    if (!specialize) '{dynamicApply($tup, 0)}
+  def headStaged[Tup <: NonEmptyTuple : Type](tup: Expr[Tup], size: Option[Int])(using QuoteContext): Expr[Head[Tup]] = {
+    if (!specialize) '{dynamicApply[Tup, 0]($tup, 0)}
     else {
       val resVal = size match {
         case Some(1) =>
@@ -101,7 +101,7 @@ object StagedTuple {
     }
   }
 
-  def tailStaged[Tup <: NonEmptyTuple : Type](tup: Expr[Tup], size: Option[Int])(given QuoteContext): Expr[Tail[Tup]] = {
+  def tailStaged[Tup <: NonEmptyTuple : Type](tup: Expr[Tup], size: Option[Int])(using QuoteContext): Expr[Tail[Tup]] = {
     if (!specialize) '{dynamicTail[Tup]($tup)}
     else {
       val res = size match {
@@ -125,7 +125,7 @@ object StagedTuple {
     }
   }
 
-  def applyStaged[Tup <: NonEmptyTuple : Type, N <: Int : Type](tup: Expr[Tup], size: Option[Int], n: Expr[N], nValue: Option[Int])(given qctx: QuoteContext): Expr[Elem[Tup, N]] = {
+  def applyStaged[Tup <: NonEmptyTuple : Type, N <: Int : Type](tup: Expr[Tup], size: Option[Int], n: Expr[N], nValue: Option[Int])(using qctx: QuoteContext): Expr[Elem[Tup, N]] = {
     import reflect._
 
     if (!specialize) '{dynamicApply($tup, $n)}
@@ -133,7 +133,7 @@ object StagedTuple {
       def fallbackApply(): Expr[Elem[Tup, N]] = nValue match {
         case Some(n) =>
           qctx.error("index out of bounds: " + n, tup)
-          '{ throw new IndexOutOfBoundsException(${n.toString.toExpr}) }
+          '{ throw new IndexOutOfBoundsException(${Expr(n.toString)}) }
         case None => '{dynamicApply($tup, $n)}
       }
       val res = size match {
@@ -170,13 +170,13 @@ object StagedTuple {
         case Some(s) if s > 4 && s <= MaxSpecialized =>
           val t = tup.as[Product]
           nValue match {
-            case Some(n) if n >= 0 && n < s => '{$t.productElement(${ n.toExpr })}
+            case Some(n) if n >= 0 && n < s => '{$t.productElement(${ Expr(n) })}
             case _ => fallbackApply()
           }
         case Some(s) if s > MaxSpecialized =>
           val t = tup.as[TupleXXL]
           nValue match {
-            case Some(n) if n >= 0 && n < s => '{$t.elems(${ n.toExpr })}
+            case Some(n) if n >= 0 && n < s => '{$t.elems(${ Expr(n) })}
             case _ => fallbackApply()
           }
         case _ => fallbackApply()
@@ -185,7 +185,7 @@ object StagedTuple {
     }
   }
 
-  def consStaged[T <: Tuple & Singleton : Type, H : Type](self: Expr[T], x: Expr[H], tailSize: Option[Int])(given QuoteContext): Expr[H *: T] =
+  def consStaged[T <: Tuple & Singleton : Type, H : Type](self: Expr[T], x: Expr[H], tailSize: Option[Int])(using QuoteContext): Expr[H *: T] =
   if (!specialize) '{dynamicCons[H, T]($x, $self)}
   else {
     val res = tailSize match {
@@ -199,15 +199,13 @@ object StagedTuple {
         self.as[Tuple3[_, _, _]].bind(t => '{Tuple4($x, $t._1, $t._2, $t._3)})
       case Some(4) =>
         self.as[Tuple4[_, _, _, _]].bind(t => '{Tuple5($x, $t._1, $t._2, $t._3, $t._4)})
-      case Some(n) =>
-        fromArrayStaged[H *: T]('{cons$Array($x, ${ toArrayStaged(self, tailSize) })}, Some(n + 1))
       case _ =>
         '{dynamicCons[H, T]($x, $self)}
     }
     res.as[H *: T]
   }
 
-  def concatStaged[Self <: Tuple & Singleton : Type, That <: Tuple & Singleton : Type](self: Expr[Self], selfSize: Option[Int], that: Expr[That], thatSize: Option[Int])(given QuoteContext): Expr[Concat[Self, That]] = {
+  def concatStaged[Self <: Tuple & Singleton : Type, That <: Tuple & Singleton : Type](self: Expr[Self], selfSize: Option[Int], that: Expr[That], thatSize: Option[Int])(using QuoteContext): Expr[Concat[Self, That]] = {
     if (!specialize) '{dynamicConcat[Self, That]($self, $that)}
     else {
       def genericConcat(xs: Expr[Tuple], ys: Expr[Tuple]): Expr[Tuple] =
@@ -258,9 +256,9 @@ object StagedTuple {
 
   private implicit class ExprOps[U: Type](expr: Expr[U]) {
 
-    def as[T: Type](given QuoteContext): Expr[T] = '{ $expr.asInstanceOf[T] }
+    def as[T: Type](using QuoteContext): Expr[T] = '{ $expr.asInstanceOf[T] }
 
-    def bind[T: Type](in: Expr[U] => Expr[T])(given QuoteContext): Expr[T] = '{
+    def bind[T: Type](in: Expr[U] => Expr[T])(using QuoteContext): Expr[T] = '{
       val t: U = $expr
       ${in('t)}
     }

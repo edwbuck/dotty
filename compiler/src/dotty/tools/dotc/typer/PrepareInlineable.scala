@@ -240,11 +240,10 @@ object PrepareInlineable {
     if (inlined.owner.isClass && inlined.owner.seesOpaques)
       ctx.error(em"Implementation restriction: No inline methods allowed where opaque type aliases are in scope", inlined.sourcePos)
     if (ctx.outer.inInlineMethod)
-      ctx.error(ex"implementation restriction: nested inline methods are not supported", inlined.sourcePos)
-    if (inlined.name.isUnapplyName && tupleArgs(body).isEmpty)
-      ctx.warning(
-        em"inline unapply method can be rewritten only if its right hand side is a tuple (e1, ..., eN)",
-        body.sourcePos)
+      ctx.error(ex"Implementation restriction: nested inline methods are not supported", inlined.sourcePos)
+    if (inlined.name.isUnapplyName)
+      ctx.error(em"Implementation restriction: inline ${inlined.name} methods are not supported", inlined.sourcePos)
+
     if (inlined.is(Macro) && !ctx.isAfterTyper) {
 
       def checkMacro(tree: Tree): Unit = tree match {
@@ -259,9 +258,9 @@ object PrepareInlineable {
         case Block(DefDef(nme.ANON_FUN, _, _, _, _) :: Nil, Closure(_, fn, _)) if fn.symbol.info.isImplicitMethod =>
           // TODO Support this pattern
           ctx.error(
-            """Macros using a return type of the form `foo(): (given X) => Y` are not yet supported.
+            """Macros using a return type of the form `foo(): X ?=> Y` are not yet supported.
               |
-              |Place the implicit as an argument (`foo()(given X): Y`) to overcome this limitation.
+              |Place the implicit as an argument (`foo()(using X): Y`) to overcome this limitation.
               |""".stripMargin, tree.sourcePos)
         case _ =>
           ctx.error(

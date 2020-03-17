@@ -6,6 +6,7 @@ import Types._
 import Contexts._
 import Symbols._
 import Decorators._
+import Flags._
 import config.Config
 import config.Printers.{constr, typr}
 import dotty.tools.dotc.reporting.trace
@@ -34,7 +35,7 @@ trait ConstraintHandling[AbstractContext] {
   protected def constraint: Constraint
   protected def constraint_=(c: Constraint): Unit
 
-  private[this] var addConstraintInvocations = 0
+  private var addConstraintInvocations = 0
 
   /** If the constraint is frozen we cannot add new bounds to the constraint. */
   protected var frozenConstraint: Boolean = false
@@ -205,7 +206,7 @@ trait ConstraintHandling[AbstractContext] {
     else
       isSubType(tp1, tp2)
 
-  @forceInline final def inFrozenConstraint[T](op: => T): T = {
+  inline final def inFrozenConstraint[T](op: => T): T = {
     val savedFrozen = frozenConstraint
     val savedLambda = caseLambda
     frozenConstraint = true
@@ -298,6 +299,9 @@ trait ConstraintHandling[AbstractContext] {
    *      of all common base types, provied the result is a subtype of `bound`.
    *
    *  Don't do these widenings if `bound` is a subtype of `scala.Singleton`.
+   *  Also, if the result of these widenings is a TypeRef to a module class,
+   *  and this type ref is different from `inst`, replace by a TermRef to
+   *  its source module instead.
    *
    * At this point we also drop the @Repeated annotation to avoid inferring type arguments with it,
    * as those could leak the annotation to users (see run/inferred-repeated-result).
@@ -314,7 +318,11 @@ trait ConstraintHandling[AbstractContext] {
     val wideInst =
       if (isSubTypeWhenFrozen(bound, defn.SingletonType)) inst
       else widenOr(widenSingle(inst))
-    wideInst.dropRepeatedAnnot
+    wideInst match
+      case wideInst: TypeRef if wideInst.symbol.is(Module) =>
+        TermRef(wideInst.prefix, wideInst.symbol.sourceModule)
+      case _ =>
+        wideInst.dropRepeatedAnnot
   }
 
   /** The instance type of `param` in the current constraint (which contains `param`).
@@ -379,8 +387,9 @@ trait ConstraintHandling[AbstractContext] {
           case bounds: TypeBounds =>
             val lower = constraint.lower(param)
             val upper = constraint.upper(param)
-            if (lower.nonEmpty && !bounds.lo.isRef(defn.NothingClass) ||
-              upper.nonEmpty && !bounds.hi.isRef(defn.AnyClass)) constr_println(i"INIT*** $tl")
+            if lower.nonEmpty && !bounds.lo.isRef(defn.NothingClass)
+               || upper.nonEmpty && !bounds.hi.isAny
+            then constr_println(i"INIT*** $tl")
             lower.forall(addOneBound(_, bounds.hi, isUpper = true)) &&
               upper.forall(addOneBound(_, bounds.lo, isUpper = false))
           case _ =>
@@ -508,17 +517,37 @@ trait ConstraintHandling[AbstractContext] {
             case inst =>
               prune(inst)
           }
+        case bound: ExprType =>
+          // ExprTypes are not value types, so type parameters should not
+          // be instantiated to ExprTypes. A scenario where such an attempted
+          // instantiation can happen is if we unify (=> T) => () with A => ()
+          // where A is a TypeParamRef. See the comment on EtaExpansion.etaExpand
+          // why types such as (=> T) => () can be constructed and i7969.scala
+          // as a test where this happens.
+          // Note that scalac by contrast allows such instantiations. But letting
+          // type variables be ExprTypes has its own problems (e.g. you can't write
+          // the resulting types down) and is largely unknown terrain.
+          NoType
         case _ =>
           pruneLambdaParams(bound)
       }
+
+      def kindCompatible(tp1: Type, tp2: Type): Boolean =
+        val tparams1 = tp1.typeParams
+        val tparams2 = tp2.typeParams
+        tparams1.corresponds(tparams2)((p1, p2) => kindCompatible(p1.paramInfo, p2.paramInfo))
+        && (tparams1.isEmpty || kindCompatible(tp1.hkResult, tp2.hkResult))
+        || tp1.hasAnyKind
+        || tp2.hasAnyKind
 
       try bound match {
         case bound: TypeParamRef if constraint contains bound =>
           addParamBound(bound)
         case _ =>
           val pbound = prune(bound)
-          pbound.exists && (
-            if (fromBelow) addLowerBound(param, pbound) else addUpperBound(param, pbound))
+          pbound.exists
+          && kindCompatible(param, pbound)
+          && (if fromBelow then addLowerBound(param, pbound) else addUpperBound(param, pbound))
       }
       finally addConstraintInvocations -= 1
     }

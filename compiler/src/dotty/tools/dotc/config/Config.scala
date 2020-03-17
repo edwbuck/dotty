@@ -141,6 +141,12 @@ object Config {
    */
   final val checkUnerased = false
 
+  /** Check that atoms-based comparisons match regular comparisons that do not
+   *  take atoms into account. The two have to give the same results, since
+   *  atoms comparison is intended to be just an optimization.
+   */
+  final val checkAtomsComparisons = false
+
   /** In `derivedSelect`, rewrite
    *
    *      (S & T)#A  -->  S#A & T#A
@@ -162,6 +168,12 @@ object Config {
 
   /** If set, prints a trace of all symbol completions */
   final val showCompletions = false
+
+  /** If set, method results that are context functions are flattened by adding
+   *  the parameters of the context function results to the methods themselves.
+   *  This is an optimization that reduces closure allocations.
+   */
+  final val flattenContextFunctionResults = true
 
   /** If set, enables tracing */
   final val tracingEnabled = false

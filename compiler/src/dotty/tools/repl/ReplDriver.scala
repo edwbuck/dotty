@@ -61,7 +61,7 @@ class ReplDriver(settings: Array[String],
   override def sourcesRequired: Boolean = false
 
   /** Create a fresh and initialized context with IDE mode enabled */
-  private[this] def initialCtx = {
+  private def initialCtx = {
     val rootCtx = initCtx.fresh.addMode(Mode.ReadPositions | Mode.Interactive | Mode.ReadComments)
     rootCtx.setSetting(rootCtx.settings.YcookComments, true)
     val ictx = setup(settings, rootCtx)._2
@@ -78,7 +78,7 @@ class ReplDriver(settings: Array[String],
    *  such, when the user enters `:reset` this method should be called to reset
    *  everything properly
    */
-  protected[this] def resetToInitial(): Unit = {
+  protected def resetToInitial(): Unit = {
     rootCtx = initialCtx
     if (rootCtx.settings.outputDir.isDefault(rootCtx))
       rootCtx = rootCtx.fresh
@@ -87,9 +87,9 @@ class ReplDriver(settings: Array[String],
     rendering = new Rendering(classLoader)
   }
 
-  private[this] var rootCtx: Context = _
-  private[this] var compiler: ReplCompiler = _
-  private[this] var rendering: Rendering = _
+  private var rootCtx: Context = _
+  private var compiler: ReplCompiler = _
+  private var rendering: Rendering = _
 
   // initialize the REPL session as part of the constructor so that once `run`
   // is called, we're in business
@@ -159,7 +159,7 @@ class ReplDriver(settings: Array[String],
   }
 
   /** Extract possible completions at the index of `cursor` in `expr` */
-  protected[this] final def completions(cursor: Int, expr: String, state0: State): List[Candidate] = {
+  protected final def completions(cursor: Int, expr: String, state0: State): List[Candidate] = {
     def makeCandidate(completion: Completion) = {
       val displ = completion.label
       new Candidate(
@@ -205,7 +205,9 @@ class ReplDriver(settings: Array[String],
       case _ => // new line, empty tree
         state
     }
-    out.println()
+    implicit val ctx: Context = newState.context
+    if (!ctx.settings.XreplDisableDisplay.value)
+      out.println()
     newState
   }
 
@@ -238,7 +240,11 @@ class ReplDriver(settings: Array[String],
 
             val warnings = newState.context.reporter.removeBufferedMessages(newState.context)
             displayErrors(warnings)(newState) // display warnings
-            displayDefinitions(unit.tpdTree, newestWrapper)(newStateWithImports)
+            implicit val ctx = newState.context
+            if (!ctx.settings.XreplDisableDisplay.value)
+              displayDefinitions(unit.tpdTree, newestWrapper)(newStateWithImports)
+            else
+              newStateWithImports
         }
       )
   }
@@ -272,7 +278,7 @@ class ReplDriver(settings: Array[String],
 
       val vals =
         info.fields
-          .filterNot(_.symbol.isOneOf(ParamAccessor | Private | Synthetic | Module))
+          .filterNot(_.symbol.isOneOf(ParamAccessor | Private | Synthetic | Artifact | Module))
           .filter(_.symbol.name.is(SimpleNameKind))
           .sortBy(_.name)
 
@@ -375,7 +381,7 @@ class ReplDriver(settings: Array[String],
 
   /** Render messages using the `MessageRendering` trait */
   private def renderMessage(cont: MessageContainer): Context => String =
-    messageRenderer.messageAndPos(cont.contained(), cont.pos, messageRenderer.diagnosticLevel(cont))(_)
+    messageRenderer.messageAndPos(cont.contained, cont.pos, messageRenderer.diagnosticLevel(cont))(_)
 
   /** Output errors to `out` */
   private def displayErrors(errs: Seq[MessageContainer])(implicit state: State): State = {

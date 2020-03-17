@@ -6,13 +6,14 @@ import java.nio.file._
 object Properties {
 
   /** If property is unset or "TRUE" we consider it `true` */
-  private[this] def propIsNullOrTrue(prop: String): Boolean = {
+  private def propIsNullOrTrue(prop: String): Boolean = {
     val prop = System.getProperty("dotty.tests.interactive")
     prop == null || prop == "TRUE"
   }
 
-  /** Are we running on the Drone CI? */
-  val isRunByDrone: Boolean = sys.env.isDefinedAt("DRONE")
+  /** Are we running on the CI? */
+  val isRunByCI: Boolean = sys.env.isDefinedAt("DOTTY_CI_RUN")
+  || sys.env.isDefinedAt("DRONE")  // TODO remove this when we drop Drone
 
   /** Tests should run interactive? */
   val testsInteractive: Boolean = propIsNullOrTrue("dotty.tests.interactive")
@@ -52,6 +53,12 @@ object Properties {
 
   /** dotty-staging jar */
   def dottyStaging: String = sys.props("dotty.tests.classes.dottyStaging")
+
+  /** dotty-tasty-inspector jar */
+  def dottyTastyInspector: String = sys.props("dotty.tests.classes.dottyTastyInspector")
+
+  /** tasty-core jar */
+  def tastyCore: String = sys.props("dotty.tests.classes.tastyCore")
 
   /** compiler-interface jar */
   def compilerInterface: String = sys.props("dotty.tests.classes.compilerInterface")

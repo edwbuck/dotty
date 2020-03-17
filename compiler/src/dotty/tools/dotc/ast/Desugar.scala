@@ -9,7 +9,6 @@ import Decorators._, transform.SymUtils._
 import NameKinds.{UniqueName, EvidenceParamName, DefaultGetterName}
 import typer.{FrontEnd, Namer}
 import util.{Property, SourceFile, SourcePosition}
-import util.NameTransformer.avoidIllegalChars
 import collection.mutable.ListBuffer
 import reporting.diagnostic.messages._
 import reporting.trace
@@ -48,9 +47,6 @@ object desugar {
   enum MatchCheck {
     case None, Exhaustive, IrrefutablePatDef, IrrefutableGenFrom
   }
-
-  /** Info of a variable in a pattern: The named tree and its type */
-  private type VarInfo = (NameTree, Tree)
 
   /** Is `name` the name of a method that can be invalidated as a compiler-generated
    *  case class method if it clashes with a user-defined method?
@@ -153,12 +149,19 @@ object desugar {
    *  ==>
    *    def x: Int = expr
    *    def x_=($1: <TypeTree()>): Unit = ()
+   *
+   *  Generate the setter only for
+   *    - non-private class members
+   *    - all trait members
+   *    - all package object members
    */
   def valDef(vdef0: ValDef)(implicit ctx: Context): Tree = {
     val vdef @ ValDef(name, tpt, rhs) = transformQuotedPatternName(vdef0)
     val mods = vdef.mods
     val setterNeeded =
-      mods.is(Mutable) && ctx.owner.isClass && (!mods.isAllOf(PrivateLocal) || ctx.owner.is(Trait))
+      mods.is(Mutable)
+      && ctx.owner.isClass
+      && (!mods.is(Private) || ctx.owner.is(Trait) || ctx.owner.isPackageObject)
     if (setterNeeded) {
       // TODO: copy of vdef as getter needed?
       // val getter = ValDef(mods, name, tpt, rhs) withPos vdef.pos?
@@ -219,7 +222,8 @@ object desugar {
     val epbuf = ListBuffer[ValDef]()
     def desugarContextBounds(rhs: Tree): Tree = rhs match {
       case ContextBounds(tbounds, cxbounds) =>
-        epbuf ++= makeImplicitParameters(cxbounds, Implicit, forPrimaryConstructor = isPrimaryConstructor)
+        val iflag = if ctx.settings.strict.value then Given else Implicit
+        epbuf ++= makeImplicitParameters(cxbounds, iflag, forPrimaryConstructor = isPrimaryConstructor)
         tbounds
       case LambdaTypeTree(tparams, body) =>
         cpy.LambdaTypeTree(rhs)(tparams, desugarContextBounds(body))
@@ -248,7 +252,7 @@ object desugar {
 
     if (meth1.mods.is(Inline))
       meth1.tpt match {
-        case TypeBoundsTree(_, tpt1) =>
+        case TypeBoundsTree(_, tpt1, _) =>
           meth1 = cpy.DefDef(meth1)(tpt = tpt1)
         case tpt if !tpt.isEmpty && !meth1.rhs.isEmpty =>
           meth1 = cpy.DefDef(meth1)(rhs = Typed(meth1.rhs, tpt))
@@ -264,7 +268,7 @@ object desugar {
         Nil
     }
 
-    def normalizedVparamss = meth1.vparamss map (_ map (vparam =>
+    def normalizedVparamss = meth1.vparamss.map(_.map(vparam =>
       cpy.ValDef(vparam)(rhs = EmptyTree)))
 
     def defaultGetters(vparamss: List[List[ValDef]], n: Int): List[DefDef] = vparamss match {
@@ -286,7 +290,7 @@ object desugar {
         Nil
     }
 
-    val defGetters = defaultGetters(vparamss, 0)
+    val defGetters = defaultGetters(meth1.vparamss, 0)
     if (defGetters.isEmpty) meth1
     else {
       val meth2 = cpy.DefDef(meth1)(vparamss = normalizedVparamss)
@@ -456,7 +460,7 @@ object desugar {
         ListOfNil
       }
       else if (isCaseClass && originalVparamss.head.exists(_.mods.isOneOf(GivenOrImplicit))) {
-        ctx.error("Case classes should have a non-implicit parameter list", namePos)
+        ctx.error(CaseClassMissingNonImplicitParamList(cdef), namePos)
         ListOfNil
       }
       else originalVparamss.nestedMap(toDefParam(_, keepAnnotations = false))
@@ -470,7 +474,7 @@ object desugar {
           decompose(
             defDef(
               addEvidenceParams(
-                cpy.DefDef(ddef)(tparams = constrTparams),
+                cpy.DefDef(ddef)(tparams = constrTparams ++ ddef.tparams),
                 evidenceParams(constr1).map(toDefParam(_, keepAnnotations = false)))))
         case stat =>
           stat
@@ -484,7 +488,7 @@ object desugar {
       if (isEnum) {
         val (enumCases, enumStats) = stats.partition(DesugarEnums.isEnumCase)
         if (enumCases.isEmpty)
-          ctx.error("Enumerations must constain at least one case", namePos)
+          ctx.error(EnumerationsShouldNotBeEmpty(cdef), namePos)
         val enumCompanionRef = TermRefTree()
         val enumImport =
           Import(enumCompanionRef, enumCases.flatMap(caseIds).map(ImportSelector(_)))
@@ -554,7 +558,7 @@ object desugar {
       else if (originalTparams.isEmpty)
         appliedRef(enumClassRef)
       else {
-        ctx.error(i"explicit extends clause needed because both enum case and enum class have type parameters"
+        ctx.error(TypedCaseDoesNotExplicitlyExtendTypedEnum(enumClass, cdef)
             , cdef.sourcePos.startPos)
         appliedTypeTree(enumClassRef, constrTparams map (_ => anyRef))
       }
@@ -570,14 +574,14 @@ object desugar {
       val nu = vparamss.foldLeft(makeNew(classTypeRef)) { (nu, vparams) =>
         val app = Apply(nu, vparams.map(refOfDef))
         vparams match {
-          case vparam :: _ if vparam.mods.is(Given) => app.setGivenApply()
+          case vparam :: _ if vparam.mods.is(Given) => app.setUsingApply()
           case _ => app
         }
       }
       ensureApplied(nu)
     }
 
-    val copiedAccessFlags = if (ctx.scala2Setting) EmptyFlags else AccessFlags
+    val copiedAccessFlags = if (ctx.scala2CompatSetting) EmptyFlags else AccessFlags
 
     // Methods to add to a case class C[..](p1: T1, ..., pN: Tn)(moreParams)
     //     def _1: T1 = this.p1
@@ -681,14 +685,27 @@ object desugar {
           mods.is(Private) || (!mods.is(Protected) && mods.hasPrivateWithin)
         }
 
+        /** Does one of the parameter's types (in the first param clause)
+         *  mention a preceding parameter?
+         */
+        def isParamDependent = constrVparamss match
+          case vparams :: _ =>
+            val paramNames = vparams.map(_.name).toSet
+            vparams.exists(_.tpt.existsSubTree {
+              case Ident(name: TermName) => paramNames.contains(name)
+              case _ => false
+            })
+          case _ => false
+
         val companionParent =
-          if (constrTparams.nonEmpty ||
-              constrVparamss.length > 1 ||
-              mods.is(Abstract) ||
-              restrictedAccess ||
-              isEnumCase) anyRef
+          if constrTparams.nonEmpty
+             || constrVparamss.length > 1
+             || mods.is(Abstract)
+             || restrictedAccess
+             || isParamDependent
+             || isEnumCase
+          then anyRef
           else
-            // todo: also use anyRef if constructor has a dependent method type (or rule that out)!
             constrVparamss.foldRight(classTypeRef)((vparams, restpe) => Function(vparams map (_.tpt), restpe))
         def widenedCreatorExpr =
           widenDefs.foldLeft(creatorExpr)((rhs, meth) => Apply(Ident(meth.name), rhs :: Nil))
@@ -712,7 +729,8 @@ object desugar {
           val methName = if (hasRepeatedParam) nme.unapplySeq else nme.unapply
           val unapplyParam = makeSyntheticParameter(tpt = classTypeRef)
           val unapplyRHS = if (arity == 0) Literal(Constant(true)) else Ident(unapplyParam.name)
-          DefDef(methName, derivedTparams, (unapplyParam :: Nil) :: Nil, TypeTree(), unapplyRHS)
+          val unapplyResTp = if (arity == 0) Literal(Constant(true)) else TypeTree()
+          DefDef(methName, derivedTparams, (unapplyParam :: Nil) :: Nil, unapplyResTp, unapplyRHS)
             .withMods(synthetic)
         }
         companionDefs(companionParent, applyMeths ::: unapplyMeth :: companionMembers)
@@ -720,10 +738,7 @@ object desugar {
       else if (companionMembers.nonEmpty || companionDerived.nonEmpty || isEnum)
         companionDefs(anyRef, companionMembers)
       else if (isValueClass)
-        impl.constr.vparamss match {
-          case (_ :: Nil) :: _ => companionDefs(anyRef, Nil)
-          case _ => Nil // error will be emitted in typer
-        }
+        companionDefs(anyRef, Nil)
       else Nil
 
     enumCompanionRef match {
@@ -808,6 +823,26 @@ object desugar {
 
   /** Expand
    *
+   *    package object name { body }
+   *
+   *  to:
+   *
+   *    package name {
+   *      object `package` { body }
+   *    }
+   */
+  def packageModuleDef(mdef: ModuleDef)(implicit ctx: Context): Tree =
+    val impl = mdef.impl
+    val mods = mdef.mods
+    val moduleName = normalizeName(mdef, impl).asTermName
+    if (mods.is(Package))
+      PackageDef(Ident(moduleName),
+        cpy.ModuleDef(mdef)(nme.PACKAGE, impl).withMods(mods &~ Package) :: Nil)
+    else
+      mdef
+
+  /** Expand
+   *
    *    object name extends parents { self => body }
    *
    *  to:
@@ -825,20 +860,21 @@ object desugar {
    *
    *  where every definition in `body` is expanded to an extension method
    *  taking type parameters `tparams` and a leading paramter `(x: T)`.
-   *  See: makeExtensionDef
+   *  See: collectiveExtensionBody
    */
   def moduleDef(mdef: ModuleDef)(implicit ctx: Context): Tree = {
     val impl = mdef.impl
     val mods = mdef.mods
     impl.constr match {
-      case DefDef(_, tparams, (vparams @ (vparam :: Nil)) :: _, _, _) =>
+      case DefDef(_, tparams, vparamss @ (vparam :: Nil) :: givenParamss, _, _) =>
+        // Transform collective extension
         assert(mods.is(Given))
         return moduleDef(
           cpy.ModuleDef(mdef)(
             mdef.name,
             cpy.Template(impl)(
               constr = emptyConstructor,
-              body = impl.body.map(makeExtensionDef(_, tparams, vparams)))))
+              body = collectiveExtensionBody(impl.body, tparams, vparamss))))
       case _ =>
     }
 
@@ -848,15 +884,15 @@ object desugar {
     def flagSourcePos(flag: FlagSet) = mods.mods.find(_.flags == flag).fold(mdef.sourcePos)(_.sourcePos)
 
     if (mods.is(Abstract))
-      ctx.error(em"${hl("abstract")} modifier cannot be used for objects", flagSourcePos(Abstract))
+      ctx.error(AbstractCannotBeUsedForObjects(mdef), flagSourcePos(Abstract))
     if (mods.is(Sealed))
-      ctx.error(em"${hl("sealed")} modifier is redundant for objects", flagSourcePos(Sealed))
+      ctx.error(ModifierRedundantForObjects(mdef, "sealed"), flagSourcePos(Sealed))
     // Maybe this should be an error; see https://github.com/scala/bug/issues/11094.
     if (mods.is(Final) && !mods.is(Synthetic))
-      ctx.warning(em"${hl("final")} modifier is redundant for objects", flagSourcePos(Final))
+      ctx.warning(ModifierRedundantForObjects(mdef, "final"), flagSourcePos(Final))
 
     if (mods.is(Package))
-      PackageDef(Ident(moduleName), cpy.ModuleDef(mdef)(nme.PACKAGE, impl).withMods(mods &~ Package) :: Nil)
+      packageModuleDef(mdef)
     else if (isEnumCase) {
       typeParamIsReferenced(enumClass.typeParams, Nil, Nil, impl.parents)
         // used to check there are no illegal references to enum's type parameters in parents
@@ -881,35 +917,40 @@ object desugar {
     }
   }
 
-  /** Given tpe parameters `Ts` (possibly empty) and a leading value parameter `(x: T)`,
-   *  map a method definition
+  /** Transform the statements of a collective extension
+   *   @param stats    the original statements as they were parsed
+   *   @param tparams  the collective type parameters
+   *   @param vparamss the collective value parameters, consisting
+   *                   of a single leading value parameter, followed by
+   *                   zero or more context parameter clauses
    *
-   *     def foo [Us] paramss ...
+   *  Note: It is already assured by Parser.checkExtensionMethod that all
+   *  statements conform to requirements.
    *
-   *  to
+   *  Each method in stats is transformed into an extension method. Example:
    *
-   *     <extension> def foo[Ts ++ Us](x: T) parammss ...
+   *    extension on [Ts](x: T)(using C):
+   *      def f(y: T) = ???
+   *      def g(z: T) = f(z)
    *
-   *  If the given member `mdef` is not of this form, flag it as an error.
+   *  is turned into
+   *
+   *    extension:
+   *      <extension> def f[Ts](x: T)(using C)(y: T) = ???
+   *      <extension> def g[Ts](x: T)(using C)(z: T) = f(z)
    */
-
-  def makeExtensionDef(mdef: Tree, tparams: List[TypeDef], leadingParams: List[ValDef])(given ctx: Context): Tree = {
-    val allowed = "allowed here, since collective parameters are given"
-    mdef match {
-      case mdef: DefDef =>
-        if (mdef.mods.is(Extension)) {
-          ctx.error(em"No extension method $allowed", mdef.sourcePos)
+  def collectiveExtensionBody(stats: List[Tree],
+      tparams: List[TypeDef], vparamss: List[List[ValDef]])(using ctx: Context): List[Tree] =
+    for stat <- stats yield
+      stat match
+        case mdef: DefDef =>
+          cpy.DefDef(mdef)(
+            tparams = tparams ++ mdef.tparams,
+            vparamss = vparamss ::: mdef.vparamss,
+          ).withMods(mdef.mods | Extension)
+        case mdef =>
           mdef
-        }
-        else cpy.DefDef(mdef)(tparams = tparams ++ mdef.tparams, vparamss = leadingParams :: mdef.vparamss)
-          .withFlags(Extension)
-      case mdef: Import =>
-        mdef
-      case mdef =>
-        ctx.error(em"Only methods $allowed", mdef.sourcePos)
-        mdef
-    }
-  }
+  end collectiveExtensionBody
 
   /** Transforms
    *
@@ -931,10 +972,6 @@ object desugar {
     else tree
   }
 
-  /** Invent a name for an anonympus given of type or template `impl`. */
-  def inventGivenName(impl: Tree)(implicit ctx: Context): SimpleName =
-    avoidIllegalChars(s"given_${inventName(impl)}".toTermName.asSimpleName)
-
   /** The normalized name of `mdef`. This means
    *   1. Check that the name does not redefine a Scala core class.
    *      If it does redefine, issue an error and return a mangled name instead of the original one.
@@ -942,36 +979,35 @@ object desugar {
    */
   def normalizeName(mdef: MemberDef, impl: Tree)(implicit ctx: Context): Name = {
     var name = mdef.name
-    if (name.isEmpty) name = name.likeSpaced(inventGivenName(impl))
+    if (name.isEmpty) name = name.likeSpaced(inventGivenOrExtensionName(impl))
     if (ctx.owner == defn.ScalaPackageClass && defn.reservedScalaClassNames.contains(name.toTypeName)) {
       def kind = if (name.isTypeName) "class" else "object"
-      ctx.error(em"illegal redefinition of standard $kind $name", mdef.sourcePos)
+      ctx.error(IllegalRedefinitionOfStandardKind(kind, name), mdef.sourcePos)
       name = name.errorName
     }
     name
   }
 
-  /** Invent a name for an anonymous instance with template `impl`.
-   */
-  private def inventName(impl: Tree)(implicit ctx: Context): String = impl match {
-    case impl: Template =>
-      if (impl.parents.isEmpty)
-        impl.body.find {
-          case dd: DefDef if dd.mods.is(Extension) => true
-          case _ => false
-        }
-        match {
-          case Some(DefDef(name, _, (vparam :: _) :: _, _, _)) =>
-            s"${name}_of_${inventTypeName(vparam.tpt)}"
-          case _ =>
-            ctx.error(i"anonymous instance must have `as` part or must define at least one extension method", impl.sourcePos)
-            nme.ERROR.toString
-        }
-      else
-        impl.parents.map(inventTypeName(_)).mkString("_")
-    case impl: Tree =>
-      inventTypeName(impl)
-  }
+  /** Invent a name for an anonympus given or extension of type or template `impl`. */
+  def inventGivenOrExtensionName(impl: Tree)(using ctx: Context): SimpleName =
+    val str = impl match
+      case impl: Template =>
+        if impl.parents.isEmpty then
+          impl.body.find {
+            case dd: DefDef if dd.mods.is(Extension) => true
+            case _ => false
+          }
+          match
+            case Some(DefDef(name, _, (vparam :: _) :: _, _, _)) =>
+              s"extension_${name}_${inventTypeName(vparam.tpt)}"
+            case _ =>
+              ctx.error(AnonymousInstanceCannotBeEmpty(impl), impl.sourcePos)
+              nme.ERROR.toString
+        else
+          impl.parents.map(inventTypeName(_)).mkString("given_", "_", "")
+      case impl: Tree =>
+        "given_" ++ inventTypeName(impl)
+    str.toTermName.asSimpleName
 
   private class NameExtractor(followArgs: Boolean) extends UntypedTreeAccumulator[String] {
     private def extractArgs(args: List[Tree])(implicit ctx: Context): String =
@@ -987,7 +1023,7 @@ object desugar {
           case tree: LambdaTypeTree =>
             apply(x, tree.body)
           case tree: Tuple =>
-            if (followArgs) extractArgs(tree.trees) else "Tuple"
+            extractArgs(tree.trees)
           case tree: Function if tree.args.nonEmpty =>
             if (followArgs) s"${extractArgs(tree.args)}_to_${apply("", tree.body)}" else "Function"
           case _ => foldOver(x, tree)
@@ -1085,7 +1121,7 @@ object desugar {
         if (tupleOptimizable) rhs
         else Match(makeSelector(rhs, MatchCheck.IrrefutablePatDef), caseDef :: Nil)
       vars match {
-        case Nil =>
+        case Nil if !mods.is(Lazy) =>
           matchExpr
         case (named, tpt) :: Nil =>
           derivedValDef(original, named, tpt, matchExpr, mods)
@@ -1096,7 +1132,10 @@ object desugar {
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
               .withSpan(pat.span.union(rhs.span)).withMods(patMods)
-          def selector(n: Int) = Select(Ident(tmpName), nme.selectorName(n))
+          val useSelectors = vars.length <= 22
+          def selector(n: Int) =
+            if useSelectors then Select(Ident(tmpName), nme.selectorName(n))
+            else Apply(Select(Ident(tmpName), nme.apply), Literal(Constant(n)) :: Nil)
           val restDefs =
             for (((named, tpt), n) <- vars.zipWithIndex if named.name != nme.WILDCARD)
             yield
@@ -1108,7 +1147,7 @@ object desugar {
 
   /** Expand variable identifier x to x @ _ */
   def patternVar(tree: Tree)(implicit ctx: Context): Bind = {
-    val Ident(name) = tree
+    val Ident(name) = unsplice(tree)
     Bind(name, Ident(nme.WILDCARD)).withSpan(tree.span)
   }
 
@@ -1120,7 +1159,8 @@ object desugar {
   val legalOpaque: MemberDefTest = {
     case TypeDef(_, rhs) =>
       def rhsOK(tree: Tree): Boolean = tree match {
-        case _: TypeBoundsTree | _: Template => false
+        case bounds: TypeBoundsTree => !bounds.alias.isEmpty
+        case _: Template => false
         case LambdaTypeTree(_, body) => rhsOK(body)
         case _ => true
       }
@@ -1133,10 +1173,9 @@ object desugar {
   def checkModifiers(tree: Tree)(implicit ctx: Context): Tree = tree match {
     case tree: MemberDef =>
       var tested: MemberDef = tree
-      def fail(msg: String) = ctx.error(msg, tree.sourcePos)
       def checkApplicable(flag: Flag, test: MemberDefTest): Unit =
         if (tested.mods.is(flag) && !test.applyOrElse(tree, (md: MemberDef) => false)) {
-          fail(i"modifier `${flag.flagsString}` is not allowed for this definition")
+          ctx.error(ModifierNotAllowedForDefinition(flag), tree.sourcePos)
           tested = tested.withMods(tested.mods.withoutFlags(flag))
         }
       checkApplicable(Opaque, legalOpaque)
@@ -1216,6 +1255,23 @@ object desugar {
     else Apply(ref(tupleTypeRef.classSymbol.companionModule.termRef), ts)
   }
 
+  private def isTopLevelDef(stat: Tree)(using Context): Boolean = stat match
+    case _: ValDef | _: PatDef | _: DefDef | _: Export => true
+    case stat: ModuleDef =>
+      stat.mods.isOneOf(GivenOrImplicit)
+    case stat: TypeDef =>
+      !stat.isClassDef || stat.mods.isOneOf(GivenOrImplicit)
+    case _ =>
+      false
+
+  /** Assuming `src` contains top-level definition, returns the name that should
+   *  be using for the package object that will wrap them.
+   */
+  def packageObjectName(src: SourceFile): TermName =
+    val fileName = src.file.name
+    val sourceName = fileName.take(fileName.lastIndexOf('.'))
+    (sourceName ++ str.TOPLEVEL_SUFFIX).toTermName
+
   /** Group all definitions that can't be at the toplevel in
    *  an object named `<source>$package` where `<source>` is the name of the source file.
    *  Definitions that can't be at the toplevel are:
@@ -1227,26 +1283,22 @@ object desugar {
    *     (i.e. objects having the same name as a wrapped type)
    */
   def packageDef(pdef: PackageDef)(implicit ctx: Context): PackageDef = {
-    def isWrappedType(stat: TypeDef): Boolean =
-      !stat.isClassDef || stat.mods.isOneOf(GivenOrImplicit)
     val wrappedTypeNames = pdef.stats.collect {
-      case stat: TypeDef if isWrappedType(stat) => stat.name
+      case stat: TypeDef if isTopLevelDef(stat) => stat.name
     }
-    def needsObject(stat: Tree) = stat match {
-      case _: ValDef | _: PatDef | _: DefDef | _: Export => true
-      case stat: ModuleDef =>
-        stat.mods.isOneOf(GivenOrImplicit) ||
-        wrappedTypeNames.contains(stat.name.stripModuleClassSuffix.toTypeName)
-      case stat: TypeDef => isWrappedType(stat)
-      case _ => false
-    }
-    val (nestedStats, topStats) = pdef.stats.partition(needsObject)
+    def inPackageObject(stat: Tree) =
+      isTopLevelDef(stat) || {
+        stat match
+          case stat: ModuleDef =>
+            wrappedTypeNames.contains(stat.name.stripModuleClassSuffix.toTypeName)
+          case _ =>
+            false
+      }
+    val (nestedStats, topStats) = pdef.stats.partition(inPackageObject)
     if (nestedStats.isEmpty) pdef
     else {
-      var fileName = ctx.source.file.name
-      val sourceName = fileName.take(fileName.lastIndexOf('.'))
-      val groupName = avoidIllegalChars((sourceName ++ str.TOPLEVEL_SUFFIX).toTermName.asSimpleName)
-      val grouped = ModuleDef(groupName, Template(emptyConstructor, Nil, Nil, EmptyValDef, nestedStats))
+      val name = packageObjectName(ctx.source)
+      val grouped = ModuleDef(name, Template(emptyConstructor, Nil, Nil, EmptyValDef, nestedStats))
       cpy.PackageDef(pdef)(pdef.pid, topStats :+ grouped)
     }
   }
@@ -1279,33 +1331,39 @@ object desugar {
     Function(params, Match(makeSelector(selector, checkMode), cases))
   }
 
-  /** Map n-ary function `(p1, ..., pn) => body` where n != 1 to unary function as follows:
+  /** Map n-ary function `(x1: T1, ..., xn: Tn) => body` where n != 1 to unary function as follows:
    *
-   *    x$1 => {
-   *      def p1 = x$1._1
+   *    (x$1: (T1, ..., Tn)) => {
+   *      def x1: T1 = x$1._1
    *      ...
-   *      def pn = x$1._n
+   *      def xn: Tn = x$1._n
    *      body
    *    }
    *
    *  or if `isGenericTuple`
    *
-   *    x$1 => {
-   *      def p1 = x$1.apply(0)
+   *    (x$1: (T1, ... Tn) => {
+   *      def x1: T1 = x$1.apply(0)
    *      ...
-   *      def pn = x$1.apply(n-1)
+   *      def xn: Tn = x$1.apply(n-1)
    *      body
    *    }
+   *
+   *  If some of the Ti's are absent, omit the : (T1, ..., Tn) type ascription
+   *  in the selector.
    */
   def makeTupledFunction(params: List[ValDef], body: Tree, isGenericTuple: Boolean)(implicit ctx: Context): Tree = {
-    val param = makeSyntheticParameter()
+    val param = makeSyntheticParameter(
+      tpt =
+        if params.exists(_.tpt.isEmpty) then TypeTree()
+        else Tuple(params.map(_.tpt)))
     def selector(n: Int) =
       if (isGenericTuple) Apply(Select(refOfDef(param), nme.apply), Literal(Constant(n)))
       else Select(refOfDef(param), nme.selectorName(n))
     val vdefs =
       params.zipWithIndex.map {
         case (param, idx) =>
-          DefDef(param.name, Nil, Nil, TypeTree(), selector(idx)).withSpan(param.span)
+          DefDef(param.name, Nil, Nil, param.tpt, selector(idx)).withSpan(param.span)
       }
     Function(param :: Nil, Block(vdefs, body))
   }
@@ -1685,16 +1743,6 @@ object desugar {
     TypeDef(tpnme.REFINE_CLASS, impl).withFlags(Trait)
   }
 
- /** If tree is of the form `id` or `id: T`, return its name and type, otherwise return None.
-   */
-  private object IdPattern {
-    def unapply(tree: Tree)(implicit ctx: Context): Option[VarInfo] = tree match {
-      case id: Ident if id.name != nme.WILDCARD => Some(id, TypeTree())
-      case Typed(id: Ident, tpt) => Some((id, tpt))
-      case _ => None
-    }
-  }
-
   /** Returns list of all pattern variables, possibly with their types,
    *  without duplicates
    */
@@ -1745,10 +1793,11 @@ object desugar {
       case Block(Nil, expr) =>
         collect(expr)
       case Quote(expr) =>
-        new TreeTraverser {
+        new UntypedTreeTraverser {
           def traverse(tree: untpd.Tree)(implicit ctx: Context): Unit = tree match {
             case Splice(expr) => collect(expr)
-            case TypSplice(expr) => collect(expr)
+            case TypSplice(expr) =>
+              ctx.error(TypeSpliceInValPattern(expr), tree.sourcePos)
             case _ => traverseChildren(tree)
           }
         }.traverse(expr)

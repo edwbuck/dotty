@@ -636,6 +636,21 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals("List", tpe.show)
     }
 
+  @Test def missingTypeParameterInTypeApp =
+    checkMessagesAfter(RefChecks.name) {
+      """object Scope {
+        |  def f[T] = ???
+        |  val x = f[List]
+        |  val y = f[Either]
+        |}""".stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(2, messages)
+      assertEquals("Missing type parameter for List", messages(1).msg)
+      assertEquals("Missing type parameters for Either", messages(0).msg)
+    }
+
   @Test def doesNotConformToBound =
     checkMessagesAfter(RefChecks.name) {
       """class WithParam[A <: List[Int]]
@@ -969,22 +984,6 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals(err, ImplicitClassPrimaryConstructorArity())
     }
 
-  @Test def anonymousFunctionMissingParamType =
-    checkMessagesAfter(RefChecks.name) {
-      """
-        |object AnonymousF {
-        |  val f = { case x: Int => x + 1 }
-        |}""".stripMargin
-    }
-    .expect { (ictx, messages) =>
-      implicit val ctx: Context = ictx
-
-      assertMessageCount(1, messages)
-      val AnonymousFunctionMissingParamType(param, args, _, pt) = messages.head
-      assertEquals("x$1", param.show)
-      assertEquals("?", pt.show)
-    }
-
   @Test def superCallsNotAllowedInline =
   checkMessagesAfter(RefChecks.name) {
        """
@@ -1004,24 +1003,6 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       val SuperCallsNotAllowedInlineable(symbol) = err
       assertEquals("method bar", symbol.show)
     }
-
-  @Test def modifiersNotAllowed =
-    verifyModifiersNotAllowed("lazy trait T", "lazy", Some("trait"))
-
-  @Test def modifiersOtherThanTraitMethodVariable =
-    verifyModifiersNotAllowed("sealed lazy class x", "sealed")
-
-  private def verifyModifiersNotAllowed(code: String, modifierAssertion: String,
-                                        typeAssertion: Option[String] = None) = {
-    checkMessagesAfter(RefChecks.name)(code)
-      .expect { (ictx, messages) =>
-        implicit val ctx: Context = ictx
-        assertMessageCount(1, messages)
-        val ModifiersNotAllowed(flags, sort) :: Nil = messages
-        assertEquals(modifierAssertion, flags.flagsString)
-        assertEquals(typeAssertion, sort)
-      }
-  }
 
   @Test def wildcardOnTypeArgumentNotAllowedOnNew =
     checkMessagesAfter(RefChecks.name) {
@@ -1277,7 +1258,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
     checkMessagesAfter(FrontEnd.name) {
       """
         |object Test {
-        |  { ) }
+        |  { with }
         |  { private ) }
         |}
       """.stripMargin
@@ -1366,7 +1347,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       }
 
   @Test def unapplyInvalidReturnType =
-    checkMessagesAfter("frontend") {
+    checkMessagesAfter("typer") {
       """
         |class A(val i: Int)
         |
@@ -1386,7 +1367,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
     }
 
   @Test def unapplySeqInvalidReturnType =
-    checkMessagesAfter("frontend") {
+    checkMessagesAfter("typer") {
       """
         |class A(val i: Int)
         |
@@ -1638,4 +1619,244 @@ class ErrorMessagesTests extends ErrorMessagesTest {
         message.msg
       )
     }
+
+  @Test def traitParametersUsedAsParentPrefix() =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |class Outer {
+        |   trait Inner
+        |   trait Test(val outer: Outer) extends outer.Inner
+        |}
+        |""".stripMargin
+    }.expect {
+      (ictx, messages) =>
+        implicit val ctx: Context = ictx
+        val TraitParameterUsedAsParentPrefix(cls) :: Nil = messages
+        assertEquals("trait Test", cls.show)
+        assertEquals(
+          s"${cls.show} cannot extend from a parent that is derived via its own parameters",
+          messages.head.msg
+        )
+    }
+
+  @Test def unknownNamedEnclosingClassOrObject() =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |class TestObject {
+        |  private[doesNotExist] def test: Int = 5
+        |}
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val UnknownNamedEnclosingClassOrObject(name) :: Nil = messages
+      assertEquals("doesNotExist", name.show)
+    }
+
+  @Test def illegalCyclicTypeReference() =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |type X = List[X]
+      """.stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(1, messages)
+      val IllegalCyclicTypeReference(sym, where, lastChecked) :: Nil = messages
+      assertEquals("type X", sym.show)
+      assertEquals("alias", where)
+      assertEquals("List[X]", lastChecked.show)
+    }
+
+  @Test def erasedTypesCanOnlyBeFunctionTypesSuccess() =
+    checkMessagesAfter(FrontEnd.name) ("def foo(f: (erased Int) => Int): Int = 1")
+      .expectNoErrors
+
+  @Test def erasedTypesCanOnlyBeFunctionTypesFailed() =
+    checkMessagesAfter(FrontEnd.name) ("def foo(f: (erased Int)): Int = 1")
+      .expect { (ictx, messages) =>
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val ErasedTypesCanOnlyBeFunctionTypes() :: Nil = messages
+        assertEquals("Types with erased keyword can only be function types `(erased ...) => ...`", messages.head.msg)
+      }
+
+  @Test def caseClassMissingParamListSuccessful =
+    checkMessagesAfter(FrontEnd.name) ("case class Test()")
+      .expectNoErrors
+
+  @Test def caseClassMissingParamListFailed =
+    checkMessagesAfter(FrontEnd.name) ("case class Test")
+      .expect {
+        (ictx, messages) =>
+          implicit val ctx: Context = ictx
+          assertMessageCount(1, messages)
+          val CaseClassMissingParamList(tpe) :: Nil = messages
+          assertEquals("A case class must have at least one parameter list", messages.head.msg)
+      }
+
+  @Test def caseClassMissingNonImplicitParamListSuccessful =
+    checkMessagesAfter(FrontEnd.name) ("case class Test()(using foo: String)")
+      .expectNoErrors
+
+  @Test def caseClassMissingNonImplicitParamListFailed =
+    checkMessagesAfter(FrontEnd.name) ("case class Test(using foo: String)")
+      .expect {
+        (ictx, messages) =>
+          implicit val ctx: Context = ictx
+          assertMessageCount(1, messages)
+          val CaseClassMissingNonImplicitParamList(tpe) :: Nil = messages
+          assertEquals("A case class must have at least one non-implicit parameter list", messages.head.msg)
+      }
+
+  @Test def enumMustContainOneCase =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |enum Foo { }
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val EnumerationsShouldNotBeEmpty(typeDef) :: Nil = messages
+        assertEquals("Enumerations must contain at least one case", errorMsg)
+        assertEquals("Foo", typeDef.name.toString)
+      }
+
+  @Test def objectsCannotBeAbstract =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |abstract object Foo { }
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val AbstractCannotBeUsedForObjects(mdef) :: Nil = messages
+        assertEquals("abstract modifier cannot be used for objects", errorMsg)
+        assertEquals("Foo", mdef.name.toString)
+      }
+
+  @Test def sealedOnObjectsIsRedundant =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |sealed object Foo { }
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val ModifierRedundantForObjects(mdef, "sealed") :: Nil = messages
+        assertEquals("sealed modifier is redundant for objects", errorMsg)
+        assertEquals("Foo", mdef.name.toString)
+      }
+
+  @Test def enumAndCaseWithTypesNeedExplicitExtends =
+    checkMessagesAfter(RefChecks.name) {
+      """
+        |enum E[T,U,V] {
+        |  case C[X,Y,Z](x: X, y: Y, z: Z)
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val TypedCaseDoesNotExplicitlyExtendTypedEnum(enumDef, caseDef) :: Nil = messages
+        assertEquals("explicit extends clause needed because both enum case and enum class have type parameters", errorMsg)
+        assertEquals("E", enumDef.name.toString)
+        assertEquals("C", caseDef.name.toString)
+      }
+
+  @Test def illegalRedefinitionOfStandardKind =
+    checkMessagesAfter(RefChecks.name) {
+      """ package scala {
+        |   class Any()
+        | }
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val IllegalRedefinitionOfStandardKind(kind, name) :: Nil = messages
+        assertEquals("illegal redefinition of standard class Any", errorMsg)
+        assertEquals("class", kind)
+        assertEquals("Any", name.toString)
+      }
+
+  @Test def unexpectedPatternForSummonFrom =
+    checkMessagesAfter(RefChecks.name) {
+      """import compiletime.summonFrom
+        |inline def a = summonFrom {
+        |  case x => ???
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val UnexpectedPatternForSummonFrom(x) :: Nil = messages
+        assertEquals("Unexpected pattern for summonFrom. Expected `x: T` or `_`", errorMsg)
+        assertEquals("x", x.show)
+      }
+
+  @Test def unexpectedPatternForSummonWithPatternBinder =
+    checkMessagesAfter(RefChecks.name) {
+      """import compiletime.summonFrom
+        |inline def a = summonFrom {
+        |  case x@String => ???
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val UnexpectedPatternForSummonFrom(x) :: Nil = messages
+        assertEquals("Unexpected pattern for summonFrom. Expected `x: T` or `_`", errorMsg)
+        assertEquals("given x @ String", x.show)
+      }
+
+  @Test def typeSplicesInValPatterns =
+    checkMessagesAfter(RefChecks.name) {
+      s"""import scala.quoted._
+         |object Foo {
+         |  def f(using q: QuoteContext) = {
+         |      val t: Type[Int] = ???
+         |      val '[ *:[$$t] ] = ???
+         |  }
+         |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val TypeSpliceInValPattern(x) :: Nil = messages
+        assertEquals("Type splices cannot be used in val patterns. Consider using `match` instead.", errorMsg)
+        assertEquals("t", x.show)
+      }
+
+  @Test def modifierNotAllowedForDefinition =
+    checkMessagesAfter(RefChecks.name) {
+      """object Test {
+        |  opaque def o: Int = 3
+        |}
+      """.stripMargin
+    }
+      .expect { (ictx, messages) ⇒
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val errorMsg = messages.head.msg
+        val ModifierNotAllowedForDefinition(x) :: Nil = messages
+        assertEquals("Modifier `opaque` is not allowed for this definition", errorMsg)
+        assertEquals("opaque", x.flagsString)
+      }
 }

@@ -2,7 +2,7 @@ import java.io.File
 import java.nio.file._
 
 import Modes._
-import com.typesafe.sbt.pgp.PgpKeys
+import com.jsuereth.sbtpgp.PgpKeys
 import sbt.Keys._
 import sbt._
 import complete.DefaultParsers._
@@ -54,14 +54,18 @@ object MyScalaJSPlugin extends AutoPlugin {
 
     // Typecheck the Scala.js IR found on the classpath
     scalaJSLinkerConfig ~= (_.withCheckIR(true)),
+
+    // Exclude all these projects from `configureIDE/launchIDE` since they
+    // take time to compile, print a bunch of warnings, and are rarely edited.
+    excludeFromIDE := true
   )
 }
 
 object Build {
-  val referenceVersion = "0.19.0-bin-20190917-d724f2b-NIGHTLY"
+  val referenceVersion = "0.23.0-bin-20200305-84f2e41-NIGHTLY"
 
-  val baseVersion = "0.19.0"
-  val baseSbtDottyVersion = "0.3.5"
+  val baseVersion = "0.23.0"
+  val baseSbtDottyVersion = "0.4.0"
 
   // Versions used by the vscode extension to create a new project
   // This should be the latest published releases.
@@ -77,8 +81,8 @@ object Build {
    *  scala-library.
    */
   def stdlibVersion(implicit mode: Mode): String = mode match {
-    case NonBootstrapped => "2.13.0"
-    case Bootstrapped => "2.13.0"
+    case NonBootstrapped => "2.13.1"
+    case Bootstrapped => "2.13.1"
   }
 
   val dottyOrganization = "ch.epfl.lamp"
@@ -126,7 +130,7 @@ object Build {
   val dotr = inputKey[Unit]("run compiled binary using the correct classpath, or the user supplied classpath")
 
   // Compiles the documentation and static site
-  val genDocs = taskKey[Unit]("run dottydoc to generate static documentation site")
+  val genDocs = inputKey[Unit]("run dottydoc to generate static documentation site")
 
   // Shorthand for compiling a docs site
   val dottydoc = inputKey[Unit]("run dottydoc")
@@ -192,6 +196,11 @@ object Build {
       state
     },
 
+    // Turn off the sbt supershell because it can mangle the output of some tasks
+    // (see https://github.com/sbt/sbt/issues/5122, https://github.com/sbt/sbt/issues/5352)
+    // and in general I find it more distracting than helpful anyway.
+    useSuperShell := false,
+
     // Credentials to release to Sonatype
     credentials ++= (
       for {
@@ -201,6 +210,15 @@ object Build {
     ).toList,
     PgpKeys.pgpPassphrase := sys.env.get("PGP_PW").map(_.toCharArray()),
     PgpKeys.useGpgPinentry := true,
+
+    javaOptions ++= {
+      val ciOptions = // propagate if this is a CI build
+        sys.props.get("dotty.drone.mem") match {
+          case Some(prop) => List("-Xmx" + prop)
+          case _ => List()
+        }
+      agentOptions ::: ciOptions
+    }
   )
 
   lazy val commonSettings = publishSettings ++ Seq(
@@ -241,6 +259,13 @@ object Build {
   lazy val commonDottySettings = commonSettings ++ Seq(
     // Manually set the standard library to use
     autoScalaLibrary := false
+  )
+
+  lazy val commonScala2Settings = commonSettings ++ Seq(
+    scalaVersion := stdlibVersion(Bootstrapped),
+    moduleName ~= { _.stripSuffix("-scala2") },
+    version := dottyVersion,
+    target := baseDirectory.value / ".." / "out" / "scala-2" / name.value,
   )
 
   // Settings used when compiling dotty with the reference compiler
@@ -289,12 +314,13 @@ object Build {
       // compiler instances. This cache is invalidated based on timestamps
       // however this is only implemented on jars, directories are never
       // invalidated.
+      val tastyCore = packageBin.in(`tasty-core`, Compile).value
       val dottyLibrary = packageBin.in(`dotty-library`, Compile).value
       val dottyInterfaces = packageBin.in(`dotty-interfaces`, Compile).value
       val dottyCompiler = packageBin.in(`dotty-compiler`, Compile).value
       val dottyDoc = packageBin.in(`dotty-doc`, Compile).value
 
-      val allJars = Seq(dottyLibrary, dottyInterfaces, dottyCompiler, dottyDoc) ++ externalNonBootstrappedDeps.map(_.data)
+      val allJars = Seq(tastyCore, dottyLibrary, dottyInterfaces, dottyCompiler, dottyDoc) ++ externalNonBootstrappedDeps.map(_.data)
 
       makeScalaInstance(
         state.value,
@@ -352,22 +378,40 @@ object Build {
   private lazy val dottydocClasspath = Def.task {
     val jars = (packageAll in `dotty-compiler`).value
     val dottyLib = jars("dotty-library")
-    val dottyInterfaces = jars("dotty-interfaces")
     val otherDeps = (dependencyClasspath in Compile).value.map(_.data).mkString(File.pathSeparator)
     val externalDeps = externalCompilerClasspathTask.value
     dottyLib + File.pathSeparator + findArtifactPath(externalDeps, "scala-library")
   }
 
-  def dottyDocSettings(implicit mode: Mode) = Seq(
+  lazy val commonDocSettings = Seq(
     baseDirectory in (Compile, run) := baseDirectory.value / "..",
     baseDirectory in Test := baseDirectory.value / "..",
+    libraryDependencies ++= {
+      val flexmarkVersion = "0.42.12"
+      Seq(
+        "com.vladsch.flexmark" % "flexmark" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-tasklist" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-tables" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-autolink" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-anchorlink" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-emoji" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-gfm-strikethrough" % flexmarkVersion,
+        "com.vladsch.flexmark" % "flexmark-ext-yaml-front-matter" % flexmarkVersion,
+        Dependencies.`jackson-dataformat-yaml`,
+        "nl.big-o" % "liqp" % "0.6.7"
+      )
+    }
+  )
 
+  def dottyDocSettings(implicit mode: Mode) = Seq(
     connectInput in run := true,
     outputStrategy := Some(StdoutOutput),
 
     javaOptions ++= (javaOptions in `dotty-compiler`).value,
 
-    genDocs := Def.taskDyn {
+    genDocs := Def.inputTaskDyn {
+      val dottydocExtraArgs = spaceDelimited("<arg>").parsed
+
       // Make majorVersion available at dotty.epfl.ch/versions/latest-nightly-base
       // Used by sbt-dotty to resolve the latest nightly
       val majorVersion = baseVersion.take(baseVersion.lastIndexOf('.'))
@@ -382,12 +426,14 @@ object Build {
         "-project", "Dotty",
         "-project-version", dottyVersion,
         "-project-url", dottyGithubUrl,
-        "-classpath", dottydocClasspath.value
-      )
+        "-project-logo", "dotty-logo.svg",
+        "-classpath", dottydocClasspath.value,
+        "-Yerased-terms"
+      ) ++ dottydocExtraArgs
       (runMain in Compile).toTask(
         s""" dotty.tools.dottydoc.Main ${args.mkString(" ")} ${sources.mkString(" ")}"""
       )
-    }.value,
+    }.evaluated,
 
     dottydoc := Def.inputTaskDyn {
       val args = spaceDelimited("<arg>").parsed
@@ -395,22 +441,6 @@ object Build {
 
       (runMain in Compile).toTask(s" dotty.tools.dottydoc.Main -classpath $cp " + args.mkString(" "))
     }.evaluated,
-
-    libraryDependencies ++= {
-      val flexmarkVersion = "0.28.32"
-      Seq(
-        "com.vladsch.flexmark" % "flexmark" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-gfm-tasklist" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-gfm-tables" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-autolink" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-anchorlink" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-emoji" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-gfm-strikethrough" % flexmarkVersion,
-        "com.vladsch.flexmark" % "flexmark-ext-yaml-front-matter" % flexmarkVersion,
-        Dependencies.`jackson-dataformat-yaml`,
-        "nl.big-o" % "liqp" % "0.6.7"
-      )
-    }
   )
 
   lazy val `dotty-doc` = project.in(file("doc-tool")).asDottyDoc(NonBootstrapped)
@@ -431,29 +461,8 @@ object Build {
   def findArtifactPath(classpath: Def.Classpath, name: String): String =
     findArtifact(classpath, name).getAbsolutePath
 
-  // Settings shared between dotty-compiler, dotty-compiler-bootstrapped and dotty-staging
-  lazy val commonDottyJarClasspathSettings = Seq(
-    // http://grokbase.com/t/gg/simple-build-tool/135ke5y90p/sbt-setting-jvm-boot-paramaters-for-scala
-    // packageAll should always be run before tests
-    javaOptions ++= {
-      val externalDeps = externalCompilerClasspathTask.value
-      val jars = packageAll.in(LocalProject("dotty-compiler-bootstrapped")).value
-
-      List(
-        "-Ddotty.tests.classes.dottyInterfaces=" + jars("dotty-interfaces"),
-        "-Ddotty.tests.classes.dottyLibrary=" + jars("dotty-library"),
-        "-Ddotty.tests.classes.dottyCompiler=" + jars("dotty-compiler"),
-        "-Ddotty.tests.classes.compilerInterface=" + findArtifactPath(externalDeps, "compiler-interface"),
-        "-Ddotty.tests.classes.scalaLibrary=" + findArtifactPath(externalDeps, "scala-library"),
-        "-Ddotty.tests.classes.scalaAsm=" + findArtifactPath(externalDeps, "scala-asm"),
-        "-Ddotty.tests.classes.jlineTerminal=" + findArtifactPath(externalDeps, "jline-terminal"),
-        "-Ddotty.tests.classes.jlineReader=" + findArtifactPath(externalDeps, "jline-reader")
-      )
-    }
-  )
-
   // Settings shared between dotty-compiler and dotty-compiler-bootstrapped
-  lazy val commonDottyCompilerSettings = commonDottyJarClasspathSettings ++ Seq(
+  lazy val commonDottyCompilerSettings = Seq(
       // set system in/out for repl
       connectInput in run := true,
       outputStrategy := Some(StdoutOutput),
@@ -481,7 +490,7 @@ object Build {
 
       // get libraries onboard
       libraryDependencies ++= Seq(
-        "org.scala-lang.modules" % "scala-asm" % "6.0.0-scala-1", // used by the backend
+        "org.scala-lang.modules" % "scala-asm" % "7.3.1-scala-1", // used by the backend
         Dependencies.`compiler-interface`,
         "org.jline" % "jline-reader" % "3.9.0",   // used by the REPL
         "org.jline" % "jline-terminal" % "3.9.0",
@@ -508,33 +517,33 @@ object Build {
       // Add git-hash used to package the distribution to the manifest to know it in runtime and report it in REPL
       packageOptions += ManifestAttributes(("Git-Hash", VersionUtil.gitHash)),
 
-      // http://grokbase.com/t/gg/simple-build-tool/135ke5y90p/sbt-setting-jvm-boot-paramaters-for-scala
-      // packageAll should always be run before tests
       javaOptions ++= {
-        val ci_build = // propagate if this is a ci build
-          sys.props.get("dotty.drone.mem") match {
-            case Some(prop) => List("-Xmx" + prop)
-            case _ => List()
-          }
-
-        val tuning =
-          if (sys.props.isDefinedAt("Oshort"))
-            // Optimize for short-running applications, see https://github.com/lampepfl/dotty/issues/222
-            List("-XX:+TieredCompilation", "-XX:TieredStopAtLevel=1")
-          else List()
-
         val managedSrcDir = {
           // Populate the directory
           (managedSources in Compile).value
 
           (sourceManaged in Compile).value
         }
+        val externalDeps = externalCompilerClasspathTask.value
+        val jars = packageAll.value
 
-        val jarOpt =
-          "-Ddotty.tests.dottyCompilerManagedSources=" + managedSrcDir
-
-        jarOpt :: tuning ::: agentOptions ::: ci_build
+        Seq(
+          "-Ddotty.tests.dottyCompilerManagedSources=" + managedSrcDir,
+          "-Ddotty.tests.classes.dottyInterfaces=" + jars("dotty-interfaces"),
+          "-Ddotty.tests.classes.dottyLibrary=" + jars("dotty-library"),
+          "-Ddotty.tests.classes.dottyCompiler=" + jars("dotty-compiler"),
+          "-Ddotty.tests.classes.tastyCore=" + jars("tasty-core"),
+          "-Ddotty.tests.classes.compilerInterface=" + findArtifactPath(externalDeps, "compiler-interface"),
+          "-Ddotty.tests.classes.scalaLibrary=" + findArtifactPath(externalDeps, "scala-library"),
+          "-Ddotty.tests.classes.scalaAsm=" + findArtifactPath(externalDeps, "scala-asm"),
+          "-Ddotty.tests.classes.jlineTerminal=" + findArtifactPath(externalDeps, "jline-terminal"),
+          "-Ddotty.tests.classes.jlineReader=" + findArtifactPath(externalDeps, "jline-reader"),
+        )
       },
+
+      javaOptions += (
+        s"-Ddotty.tools.dotc.semanticdb.test=${(ThisBuild / baseDirectory).value/"tests"/"semanticdb"}"
+      ),
 
       testCompilation := Def.inputTaskDyn {
         val args = spaceDelimited("<arg>").parsed
@@ -588,8 +597,10 @@ object Build {
           val asm = findArtifactPath(externalDeps, "scala-asm")
           val dottyCompiler = jars("dotty-compiler")
           val dottyStaging = jars("dotty-staging")
+          val dottyTastyInspector = jars("dotty-tasty-inspector")
           val dottyInterfaces = jars("dotty-interfaces")
-          run(insertClasspathInArgs(args1, List(dottyCompiler, dottyInterfaces, asm, dottyStaging).mkString(File.pathSeparator)))
+          val tastyCore = jars("tasty-core")
+          run(insertClasspathInArgs(args1, List(dottyCompiler, dottyInterfaces, asm, dottyStaging, dottyTastyInspector, tastyCore).mkString(File.pathSeparator)))
         } else run(args)
       },
 
@@ -663,8 +674,10 @@ object Build {
       }
       val dottyInterfaces = jars("dotty-interfaces")
       val dottyStaging = jars("dotty-staging")
+      val dottyTastyInspector = jars("dotty-tasty-inspector")
+      val tastyCore = jars("tasty-core")
       val asm = findArtifactPath(externalDeps, "scala-asm")
-      extraClasspath ++= Seq(dottyCompiler, dottyInterfaces, asm, dottyStaging)
+      extraClasspath ++= Seq(dottyCompiler, dottyInterfaces, asm, dottyStaging, dottyTastyInspector, tastyCore)
     }
 
     val fullArgs = main :: insertClasspathInArgs(args, extraClasspath.mkString(File.pathSeparator))
@@ -685,12 +698,13 @@ object Build {
         Map(
           "dotty-interfaces"    -> packageBin.in(`dotty-interfaces`, Compile).value,
           "dotty-compiler"      -> packageBin.in(Compile).value,
+          "tasty-core"          -> packageBin.in(`tasty-core`, Compile).value,
 
           // NOTE: Using dotty-library-bootstrapped here is intentional: when
           // running the compiler, we should always have the bootstrapped
           // library on the compiler classpath since the non-bootstrapped one
           // may not be binary-compatible.
-          "dotty-library"       -> packageBin.in(`dotty-library-bootstrapped`, Compile).value,
+          "dotty-library"       -> packageBin.in(`dotty-library-bootstrapped`, Compile).value
         ).mapValues(_.getAbsolutePath)
       }
     }.value,
@@ -705,14 +719,19 @@ object Build {
   )
 
   lazy val bootstrapedDottyCompilerSettings = commonDottyCompilerSettings ++ Seq(
-    javaOptions += {
-      val jars = packageAll.in(LocalProject("dotty-compiler-bootstrapped")).value
-      "-Ddotty.tests.classes.dottyStaging=" + jars("dotty-staging")
+    javaOptions ++= {
+      val jars = packageAll.value
+      Seq(
+        "-Ddotty.tests.classes.dottyStaging=" + jars("dotty-staging"),
+        "-Ddotty.tests.classes.dottyTastyInspector=" + jars("dotty-tasty-inspector"),
+      )
     },
     packageAll := {
       packageAll.in(`dotty-compiler`).value ++ Seq(
         "dotty-compiler" -> packageBin.in(Compile).value.getAbsolutePath,
         "dotty-staging"  -> packageBin.in(LocalProject("dotty-staging"), Compile).value.getAbsolutePath,
+        "dotty-tasty-inspector"  -> packageBin.in(LocalProject("dotty-tasty-inspector"), Compile).value.getAbsolutePath,
+        "tasty-core"     -> packageBin.in(LocalProject("tasty-core-bootstrapped"), Compile).value.getAbsolutePath,
       )
     }
   )
@@ -728,10 +747,14 @@ object Build {
     case Bootstrapped => `dotty-compiler-bootstrapped`
   }
 
-  // Settings shared between dotty-library and dotty-library-bootstrapped
+  // Settings shared between dotty-library, dotty-library-bootstrapped and dotty-library-bootstrappedJS
   lazy val dottyLibrarySettings = Seq(
-    // Needed so that the library sources are visible when `dotty.tools.dotc.core.Definitions#init` is called
-    scalacOptions in Compile ++= Seq("-sourcepath", (scalaSource in Compile).value.getAbsolutePath),
+    scalacOptions in Compile ++= Seq(
+      // Needed so that the library sources are visible when `dotty.tools.dotc.core.Definitions#init` is called
+      "-sourcepath", (sourceDirectories in Compile).value.map(_.getAbsolutePath).distinct.mkString(File.pathSeparator),
+     // support declaration of scala.compiletime.erasedValue
+      "-Yerased-terms"
+    ),
   )
 
   lazy val `dotty-library` = project.in(file("library")).asDottyLibrary(NonBootstrapped)
@@ -759,21 +782,42 @@ object Build {
         (unmanagedSourceDirectories in (`dotty-library-bootstrapped`, Compile)).value,
     )
 
+  lazy val tastyCoreSettings = Seq(
+    scalacOptions ~= { old =>
+      val (language, other) = old.partition(_.startsWith("-language:"))
+      other :+ (language.headOption.map(_ + ",Scala2Compat").getOrElse("-language:Scala2Compat"))
+    }
+  )
+
+  lazy val `tasty-core` = project.in(file("tasty")).asTastyCore(NonBootstrapped)
+  lazy val `tasty-core-bootstrapped`: Project = project.in(file("tasty")).asTastyCore(Bootstrapped)
+  lazy val `tasty-core-scala2`: Project = project.in(file("tasty")).asTastyCoreScala2
+
+  def tastyCore(implicit mode: Mode): Project = mode match {
+    case NonBootstrapped => `tasty-core`
+    case Bootstrapped => `tasty-core-bootstrapped`
+  }
+
   lazy val `dotty-staging` = project.in(file("staging")).
     withCommonSettings(Bootstrapped).
     // We want the compiler to be present in the compiler classpath when compiling this project but not
     // when compiling a project that depends on dotty-staging (see sbt-dotty/sbt-test/sbt-dotty/quoted-example-project),
     // but we always need it to be present on the JVM classpath at runtime.
-    dependsOn(dottyCompiler(Bootstrapped) % "provided").
-    dependsOn(dottyCompiler(Bootstrapped) % "compile->runtime").
-    dependsOn(dottyCompiler(Bootstrapped) % "test->test").
+    dependsOn(dottyCompiler(Bootstrapped) % "provided; compile->runtime; test->test").
     settings(commonBootstrappedSettings).
-    settings(commonDottyJarClasspathSettings).
     settings(
-      javaOptions ++= {
-        val jars = packageAll.in(`dotty-compiler-bootstrapped`).value
-        List("-Ddotty.tests.classes.dottyStaging=" + jars("dotty-staging"))
-      }
+      javaOptions := (javaOptions in `dotty-compiler-bootstrapped`).value
+    )
+
+  lazy val `dotty-tasty-inspector` = project.in(file("tasty-inspector")).
+    withCommonSettings(Bootstrapped).
+    // We want the compiler to be present in the compiler classpath when compiling this project but not
+    // when compiling a project that depends on dotty-tasty-inspector (see sbt-dotty/sbt-test/sbt-dotty/tasty-inspector-example-project),
+    // but we always need it to be present on the JVM classpath at runtime.
+    dependsOn(dottyCompiler(Bootstrapped) % "provided; compile->runtime; test->test").
+    settings(commonBootstrappedSettings).
+    settings(
+      javaOptions := (javaOptions in `dotty-compiler-bootstrapped`).value
     )
 
   lazy val `dotty-sbt-bridge` = project.in(file("sbt-bridge/src")).
@@ -933,7 +977,7 @@ object Build {
         ("org.scala-js" %% "scalajs-junit-test-runtime" % scalaJSVersion).withDottyCompat(scalaVersion.value),
 
       sourceGenerators in Compile += Def.task {
-        import org.scalajs.linker.CheckedBehavior
+        import org.scalajs.linker.interface.CheckedBehavior
 
         val stage = scalaJSStage.value
 
@@ -976,17 +1020,46 @@ object Build {
       managedSources in Test ++= {
         val dir = fetchScalaJSSource.value / "test-suite"
         (
-          (dir / "shared/src/test/scala/org/scalajs/testsuite/compiler" ** (("IntTest.scala": FileFilter) || "BooleanTest.scala" || "ByteTest.scala" || "CharTest.scala" || "DoubleTest.scala" || "FloatTest.scala" || "ShortTest.scala" || "UnitTest.scala")).get
-          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/lang" ** (("IntegerTest.scala": FileFilter) || "ObjectTest.scala" || "BooleanTest.scala" || "ByteTest.scala" || "CharacterTest.scala" || "DoubleTest.scala" || "FloatTest.scala")).get
-          ++ (dir / "shared/src/test/require-jdk8/org/scalajs/testsuite/javalib/lang" ** "*.scala").get
-          ++ (dir / "shared/src/test/require-jdk8/org/scalajs/testsuite/javalib/util" ** (("Base64Test.scala": FileFilter) || "OptionalTest.scala" || "SplittableRandom.scala" || "ObjectsTestOnJDK8.scala" || "ComparatorTestOnJDK8.scala")).get
+          (dir / "shared/src/test/scala/org/scalajs/testsuite/compiler" ** (("*.scala":FileFilter) -- "RegressionTest.scala" -- "ReflectiveCallTest.scala")).get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/lang" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/io" ** (("*.scala": FileFilter) -- "ReadersTest.scala")).get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/math" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/net" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/security" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/util/regex" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/util/concurrent" ** "*.scala").get
+
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/javalib/util" * (("*.scala": FileFilter)
+            -- "AbstractListTest.scala" -- "AbstractMapTest.scala" -- "AbstractSetTest.scala" -- "ArrayDequeTest.scala" -- "ArrayListTest.scala"
+            -- "CollectionsOnCheckedCollectionTest.scala" -- "CollectionsOnCheckedListTest.scala" -- "CollectionsOnCheckedMapTest.scala" -- "CollectionsOnCheckedSetTest.scala"
+            -- "CollectionsOnCollectionsTest.scala" -- "CollectionsOnListsTest.scala" -- "CollectionsOnMapsTest.scala" -- "CollectionsOnSetFromMapTest.scala" -- "CollectionsOnSetsTest.scala"
+            -- "CollectionsOnSynchronizedCollectionTest.scala" -- "CollectionsOnSynchronizedListTest.scala" -- "CollectionsOnSynchronizedMapTest.scala" -- "CollectionsOnSynchronizedSetTest.scala" -- "CollectionsTest.scala"
+            -- "DequeTest.scala" -- "EventObjectTest.scala" -- "FormatterTest.scala" -- "HashMapTest.scala" -- "HashSetTest.scala" -- "IdentityHashMapTest.scala"
+            -- "LinkedHashMapTest.scala" -- "LinkedHashSetTest.scala" -- "LinkedListTest.scala"
+            -- "PriorityQueueTest.scala"  -- "SortedMapTest.scala" -- "SortedSetTest.scala" -- "TreeSetTest.scala")).get
+
           ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/utils" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/junit" ** "*.scala").get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/niobuffer" ** (("*.scala": FileFilter)  -- "ByteBufferTest.scala")).get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/niocharset" ** (("*.scala": FileFilter)  -- "BaseCharsetTest.scala" -- "Latin1Test.scala" -- "USASCIITest.scala" -- "UTF16Test.scala" -- "UTF8Test.scala")).get
+          ++ (dir / "shared/src/test/scala/org/scalajs/testsuite/scalalib" ** (("*.scala": FileFilter)  -- "ArrayBuilderTest.scala" -- "ClassTagTest.scala" -- "EnumerationTest.scala" -- "SymbolTest.scala")).get
+          ++ (dir / "shared/src/test/require-sam" ** "*.scala").get
+          ++ (dir / "shared/src/test/require-jdk8/org/scalajs/testsuite/compiler" ** (("*.scala": FileFilter) -- "DefaultMethodsTest.scala")).get
+          ++ (dir / "shared/src/test/require-jdk8/org/scalajs/testsuite/javalib/lang" ** "*.scala").get
+          ++ (dir / "shared/src/test/require-jdk8/org/scalajs/testsuite/javalib/util" ** (("*.scala": FileFilter) -- "CollectionsOnCopyOnWriteArrayListTestOnJDK8.scala")).get
+          ++ (dir / "shared/src/test/require-jdk7/org/scalajs/testsuite/javalib/io" ** "*.scala").get
+          ++ (dir / "shared/src/test/require-jdk7/org/scalajs/testsuite/javalib/lang" ** "*.scala").get
+          ++ (dir / "shared/src/test/require-jdk7/org/scalajs/testsuite/javalib/util" ** (("*.scala": FileFilter) -- "ObjectsTestOnJDK7.scala")).get
         )
       }
     )
 
   lazy val `dotty-bench` = project.in(file("bench")).asDottyBench(NonBootstrapped)
   lazy val `dotty-bench-bootstrapped` = project.in(file("bench")).asDottyBench(Bootstrapped)
+  lazy val `dotty-bench-run` = project.in(file("bench-run")).asDottyBench(Bootstrapped)
+
+  lazy val `dotty-tastydoc` = project.in(file("tastydoc")).asDottyTastydoc(Bootstrapped)
+  lazy val `dotty-tastydoc-input` = project.in(file("tastydoc/input")).asDottyTastydocInput(Bootstrapped)
 
   // Depend on dotty-library so that sbt projects using dotty automatically
   // depend on the dotty-library
@@ -1036,15 +1109,21 @@ object Build {
         "-Dplugin.scalaVersion=" + dottyVersion,
         "-Dsbt.boot.directory=" + ((baseDirectory in ThisBuild).value / ".sbt-scripted").getAbsolutePath // Workaround sbt/sbt#3469
       ),
-      // By default scripted tests use $HOME/.ivy2 for the ivy cache. We need to override this value for the CI.
-      scriptedLaunchOpts ++= ivyPaths.value.ivyHome.map("-Dsbt.ivy.home=" + _.getAbsolutePath).toList,
+      // Pass along ivy home and repositories settings to sbt instances run from the tests
+      scriptedLaunchOpts ++= {
+        val repositoryPath = (io.Path.userHome / ".sbt" / "repositories").absolutePath
+        s"-Dsbt.repository.config=$repositoryPath" ::
+        ivyPaths.value.ivyHome.map("-Dsbt.ivy.home=" + _.getAbsolutePath).toList
+      },
       scriptedBufferLog := true,
       scripted := scripted.dependsOn(
         publishLocal in `dotty-sbt-bridge`,
         publishLocal in `dotty-interfaces`,
         publishLocal in `dotty-compiler-bootstrapped`,
         publishLocal in `dotty-library-bootstrapped`,
+        publishLocal in `tasty-core-bootstrapped`,
         publishLocal in `dotty-staging`,
+        publishLocal in `dotty-tasty-inspector`,
         publishLocal in `scala-library`,
         publishLocal in `scala-reflect`,
         publishLocal in `dotty-doc-bootstrapped`,
@@ -1055,11 +1134,9 @@ object Build {
   lazy val `vscode-dotty` = project.in(file("vscode-dotty")).
     settings(commonSettings).
     settings(
-      version := "0.1.16-snapshot", // Keep in sync with package.json
+      version := "0.1.17-snapshot", // Keep in sync with package.json
       autoScalaLibrary := false,
       publishArtifact := false,
-      includeFilter in unmanagedSources := NothingFilter | "*.ts" | "**.json",
-      watchSources in Global ++= (unmanagedSources in Compile).value,
       resourceGenerators in Compile += Def.task {
         // Resources that will be copied when bootstrapping a new project
         val buildSbtFile = baseDirectory.value / "out" / "build.sbt"
@@ -1120,11 +1197,13 @@ object Build {
         (publishLocal in `dotty-interfaces`).value
         (publishLocal in `scala-library`).value
         (publishLocal in `scala-reflect`).value
+        (publishLocal in `tasty-core-bootstrapped`).value
         (publishLocal in `dotty-library-bootstrapped`).value
         (publishLocal in `dotty-doc-bootstrapped`).value
         (publishLocal in `dotty-compiler-bootstrapped`).value
         (publishLocal in `sbt-dotty`).value
         (publishLocal in `dotty-bootstrapped`).value
+        // (publishLocal in `dotty-staging`).value
         val pluginText =
           s"""updateOptions in Global ~= (_.withLatestSnapshots(false))
              |addSbtPlugin("ch.epfl.lamp" % "sbt-dotty" % "$sbtDottyVersion")""".stripMargin
@@ -1156,10 +1235,12 @@ object Build {
     publishMavenStyle := true,
     isSnapshot := version.value.contains("SNAPSHOT"),
     publishTo := sonatypePublishToBundle.value,
+    publishConfiguration ~= (_.withOverwrite(true)),
+    publishLocalConfiguration ~= (_.withOverwrite(true)),
     publishArtifact in Test := false,
     homepage := Some(url(dottyGithubUrl)),
-    licenses += ("BSD New",
-      url(s"$dottyGithubUrl/blob/master/LICENSE.md")),
+    licenses += (("Apache-2.0",
+      url("https://www.apache.org/licenses/LICENSE-2.0"))),
     scmInfo := Some(
       ScmInfo(
         url(dottyGithubUrl),
@@ -1251,8 +1332,10 @@ object Build {
 
     // FIXME: we do not aggregate `bin` because its tests delete jars, thus breaking other tests
     def asDottyRoot(implicit mode: Mode): Project = project.withCommonSettings.
-      aggregate(`dotty-interfaces`, dottyLibrary, dottyCompiler, dottyDoc, `dotty-sbt-bridge`).
-      bootstrappedAggregate(`scala-library`, `scala-compiler`, `scala-reflect`, scalap, `dotty-language-server`, `dotty-staging`).
+      aggregate(`dotty-interfaces`, dottyLibrary, dottyCompiler, tastyCore, dottyDoc, `dotty-sbt-bridge`).
+      bootstrappedAggregate(`scala-library`, `scala-compiler`, `scala-reflect`, scalap,
+        `dotty-language-server`, `dotty-staging`, `dotty-tasty-inspector`, `dotty-tastydoc`).
+      dependsOn(tastyCore).
       dependsOn(dottyCompiler).
       dependsOn(dottyLibrary).
       nonBootstrappedSettings(
@@ -1262,6 +1345,7 @@ object Build {
     def asDottyCompiler(implicit mode: Mode): Project = project.withCommonSettings.
       dependsOn(`dotty-interfaces`).
       dependsOn(dottyLibrary).
+      dependsOn(tastyCore).
       settings(dottyCompilerSettings)
 
     def asDottyLibrary(implicit mode: Mode): Project = project.withCommonSettings.
@@ -1270,8 +1354,15 @@ object Build {
       ).
       settings(dottyLibrarySettings)
 
+    def asTastyCore(implicit mode: Mode): Project = project.withCommonSettings.
+      dependsOn(dottyLibrary).
+      settings(tastyCoreSettings)
+
+    def asTastyCoreScala2: Project = project.settings(commonScala2Settings)
+
     def asDottyDoc(implicit mode: Mode): Project = project.withCommonSettings.
       dependsOn(dottyCompiler, dottyCompiler % "test->test").
+      settings(commonDocSettings).
       settings(dottyDocSettings)
 
     def asDottyBench(implicit mode: Mode): Project = project.withCommonSettings.
@@ -1279,10 +1370,19 @@ object Build {
       settings(commonBenchmarkSettings).
       enablePlugins(JmhPlugin)
 
+    def asDottyTastydoc(implicit mode: Mode): Project = project.withCommonSettings.
+      aggregate(`dotty-tastydoc-input`).
+      dependsOn(dottyCompiler).
+      dependsOn(`dotty-tasty-inspector`).
+      settings(commonDocSettings)
+
+    def asDottyTastydocInput(implicit mode: Mode): Project = project.withCommonSettings.
+      dependsOn(dottyCompiler)
+
     def asDist(implicit mode: Mode): Project = project.
       enablePlugins(PackPlugin).
       withCommonSettings.
-      dependsOn(`dotty-interfaces`, dottyCompiler, dottyLibrary, `dotty-staging`, dottyDoc).
+      dependsOn(`dotty-interfaces`, dottyCompiler, dottyLibrary, tastyCore, `dotty-staging`, `dotty-tasty-inspector`, dottyDoc).
       settings(commonDistSettings).
       bootstrappedSettings(
         target := baseDirectory.value / "target" // override setting in commonBootstrappedSettings

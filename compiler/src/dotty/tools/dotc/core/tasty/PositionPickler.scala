@@ -3,6 +3,10 @@ package dotc
 package core
 package tasty
 
+import dotty.tools.tasty.TastyFormat.SOURCE
+import dotty.tools.tasty.TastyBuffer
+import TastyBuffer._
+
 import ast._
 import ast.Trees._
 import ast.Trees.WithLazyField
@@ -10,9 +14,7 @@ import util.{SourceFile, NoSource}
 import core._
 import Contexts._, Symbols._, Annotations._, Decorators._
 import collection.mutable
-import TastyBuffer._
 import util.Spans._
-import TastyFormat.SOURCE
 
 class PositionPickler(pickler: TastyPickler, addrOfTree: untpd.Tree => Addr) {
   val buf: TastyBuffer = new TastyBuffer(5000)
@@ -45,7 +47,7 @@ class PositionPickler(pickler: TastyPickler, addrOfTree: untpd.Tree => Addr) {
 
     def pickleSource(source: SourceFile): Unit = {
       buf.writeInt(SOURCE)
-      buf.writeInt(pickler.nameBuffer.nameIndex(source.pathName).index)
+      buf.writeInt(pickler.nameBuffer.nameIndex(source.path.toTermName).index)
     }
 
     /** True if x's position shouldn't be reconstructed automatically from its initial span

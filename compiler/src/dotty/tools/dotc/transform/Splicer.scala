@@ -2,7 +2,7 @@ package dotty.tools.dotc
 package transform
 
 import java.io.{PrintWriter, StringWriter}
-import java.lang.reflect.{InvocationTargetException, Method}
+import java.lang.reflect.{InvocationTargetException, Method => JLRMethod}
 
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.Trees._
@@ -17,7 +17,7 @@ import dotty.tools.dotc.core.Types._
 import dotty.tools.dotc.core.Symbols._
 import dotty.tools.dotc.core.{NameKinds, TypeErasure}
 import dotty.tools.dotc.core.Constants.Constant
-import dotty.tools.dotc.tastyreflect.ReflectionImpl
+import dotty.tools.dotc.tastyreflect.{ReflectionImpl, TastyTreeExpr, TreeType}
 
 import scala.util.control.NonFatal
 import dotty.tools.dotc.util.SourcePosition
@@ -37,16 +37,24 @@ object Splicer {
    *
    *  See: `Staging`
    */
-  def splice(tree: Tree, pos: SourcePosition, classLoader: ClassLoader)(implicit ctx: Context): Tree = tree match {
+  def splice(tree: Tree, pos: SourcePosition, classLoader: ClassLoader)(using ctx: Context): Tree = tree match {
     case Quoted(quotedTree) => quotedTree
     case _ =>
       val interpreter = new Interpreter(pos, classLoader)
+      val macroOwner = ctx.newSymbol(ctx.owner, nme.MACROkw, Macro | Synthetic, defn.AnyType, coord = tree.span)
       try {
+        given Context = ctx.withOwner(macroOwner)
         // Some parts of the macro are evaluated during the unpickling performed in quotedExprToTree
         val interpretedExpr = interpreter.interpret[scala.quoted.QuoteContext => scala.quoted.Expr[Any]](tree)
-        interpretedExpr.fold(tree)(macroClosure => PickledQuotes.quotedExprToTree(macroClosure(QuoteContext())))
+        val interpretedTree = interpretedExpr.fold(tree)(macroClosure => PickledQuotes.quotedExprToTree(macroClosure(QuoteContext())))
+        checkEscapedVariables(interpretedTree, macroOwner).changeOwner(macroOwner, ctx.owner)
       }
       catch {
+        case ex: CompilationUnit.SuspendException =>
+          throw ex
+        case ex: scala.quoted.StopQuotedContext if ctx.reporter.hasErrors =>
+           // errors have been emitted
+          EmptyTree
         case ex: StopInterpretation =>
           ctx.error(ex.msg, ex.pos)
           EmptyTree
@@ -61,6 +69,46 @@ object Splicer {
       }
   }
 
+  /** Checks that no symbol that whas generated within the macro expansion has an out of scope reference */
+  def checkEscapedVariables(tree: Tree, expansionOwner: Symbol)(using ctx: Context): tree.type =
+    new TreeTraverser {
+      private[this] var locals = Set.empty[Symbol]
+      private def markSymbol(sym: Symbol)(implicit ctx: Context): Unit =
+          locals = locals + sym
+      private def markDef(tree: Tree)(implicit ctx: Context): Unit = tree match {
+        case tree: DefTree => markSymbol(tree.symbol)
+        case _ =>
+      }
+      def traverse(tree: Tree)(using ctx: Context): Unit =
+        def traverseOver(lastEntered: Set[Symbol]) =
+          try traverseChildren(tree)
+          finally locals = lastEntered
+        tree match
+          case tree: Ident if isEscapedVariable(tree.symbol) =>
+            val sym = tree.symbol
+            ctx.error(em"While expanding a macro, a reference to $sym was used outside the scope where it was defined", tree.sourcePos)
+          case Block(stats, _) =>
+            val last = locals
+            stats.foreach(markDef)
+            traverseOver(last)
+          case CaseDef(pat, guard, body) =>
+            val last = locals
+            tpd.patVars(pat).foreach(markSymbol)
+            traverseOver(last)
+          case _ =>
+            markDef(tree)
+            traverseChildren(tree)
+      private def isEscapedVariable(sym: Symbol)(using ctx: Context): Boolean =
+        sym.exists && !sym.is(Package)
+        && sym.owner.ownersIterator.exists(x =>
+          x == expansionOwner || // symbol was generated within this macro expansion
+          x.is(Macro, butNot = Method) && x.name == nme.MACROkw // symbol was generated within another macro expansion
+        )
+        && !locals.contains(sym) // symbol is not in current scope
+    }.traverse(tree)
+    tree
+
+
   /** Check that the Tree can be spliced. `${'{xyz}}` becomes `xyz`
     *  and for `$xyz` the tree of `xyz` is interpreted for which the
     *  resulting expression is returned as a `Tree`
@@ -72,7 +120,7 @@ object Splicer {
     case _ =>
       type Env = Set[Symbol]
 
-      def checkValidStat(tree: Tree)(given Env): Env = tree match {
+      def checkValidStat(tree: Tree)(using Env): Env = tree match {
         case tree: ValDef if tree.symbol.is(Synthetic) =>
           // Check val from `foo(j = x, i = y)` which it is expanded to
           // `val j$1 = x; val i$1 = y; foo(i = i$1, j = j$1)`
@@ -83,7 +131,7 @@ object Splicer {
           summon[Env]
       }
 
-      def checkIfValidArgument(tree: Tree)(given Env): Unit = tree match {
+      def checkIfValidArgument(tree: Tree)(using Env): Unit = tree match {
         case Block(Nil, expr) => checkIfValidArgument(expr)
         case Typed(expr, _) => checkIfValidArgument(expr)
 
@@ -94,9 +142,6 @@ object Splicer {
           // OK
 
         case Literal(Constant(value)) =>
-          // OK
-
-        case _ if tree.symbol == defn.QuoteContext_macroContext =>
           // OK
 
         case Call(fn, args)
@@ -125,13 +170,13 @@ object Splicer {
               |""".stripMargin, tree.sourcePos)
       }
 
-      def checkIfValidStaticCall(tree: Tree)(given Env): Unit = tree match {
+      def checkIfValidStaticCall(tree: Tree)(using Env): Unit = tree match {
         case closureDef(ddef @ DefDef(_, Nil, (ev :: Nil) :: Nil, _, _)) if ddef.symbol.info.isContextualMethod =>
-          checkIfValidStaticCall(ddef.rhs)(given summon[Env] + ev.symbol)
+          checkIfValidStaticCall(ddef.rhs)(using summon[Env] + ev.symbol)
 
         case Block(stats, expr) =>
-          val newEnv = stats.foldLeft(summon[Env])((env, stat) => checkValidStat(stat)(given env))
-          checkIfValidStaticCall(expr)(given newEnv)
+          val newEnv = stats.foldLeft(summon[Env])((env, stat) => checkValidStat(stat)(using env))
+          checkIfValidStaticCall(expr)(using newEnv)
 
         case Typed(expr, _) =>
           checkIfValidStaticCall(expr)
@@ -152,7 +197,7 @@ object Splicer {
               |""".stripMargin, tree.sourcePos)
       }
 
-      checkIfValidStaticCall(tree)(given Set.empty)
+      checkIfValidStaticCall(tree)(using Set.empty)
   }
 
   /** Tree interpreter that evaluates the tree */
@@ -189,19 +234,19 @@ object Splicer {
       case Literal(Constant(value)) =>
         interpretLiteral(value)
 
-      case _ if tree.symbol == defn.QuoteContext_macroContext =>
-        interpretQuoteContext()
-
       // TODO disallow interpreted method calls as arguments
       case Call(fn, args) =>
         if (fn.symbol.isConstructor && fn.symbol.owner.owner.is(Package))
           interpretNew(fn.symbol, args.flatten.map(interpretTree))
         else if (fn.symbol.is(Module))
           interpretModuleAccess(fn.symbol)
-        else if (fn.symbol.isStatic) {
+        else if (fn.symbol.is(Method) && fn.symbol.isStatic) {
           val staticMethodCall = interpretedStaticMethodCall(fn.symbol.owner, fn.symbol)
           staticMethodCall(args.flatten.map(interpretTree))
         }
+        else if (fn.symbol.isStatic)
+          assert(args.isEmpty)
+          interpretedStaticFieldAccess(fn.symbol)
         else if (fn.qualifier.symbol.is(Module) && fn.qualifier.symbol.isStatic)
           if (fn.name == nme.asInstanceOfPM)
             interpretModuleAccess(fn.qualifier.symbol)
@@ -217,7 +262,7 @@ object Splicer {
           unexpectedTree(tree)
 
       case closureDef((ddef @ DefDef(_, _, (arg :: Nil) :: Nil, _, _))) =>
-        (obj: AnyRef) => interpretTree(ddef.rhs)(given env.updated(arg.symbol, obj))
+        (obj: AnyRef) => interpretTree(ddef.rhs)(using env.updated(arg.symbol, obj))
 
       // Interpret `foo(j = x, i = y)` which it is expanded to
       // `val j$1 = x; val i$1 = y; foo(i = i$1, j = j$1)`
@@ -250,19 +295,16 @@ object Splicer {
     }
 
     private def interpretQuote(tree: Tree)(implicit env: Env): Object =
-      new scala.internal.quoted.TastyTreeExpr(Inlined(EmptyTree, Nil, tree).withSpan(tree.span), QuoteContext.scopeId)
+      new TastyTreeExpr(Inlined(EmptyTree, Nil, tree).withSpan(tree.span), QuoteContext.scopeId)
 
     private def interpretTypeQuote(tree: Tree)(implicit env: Env): Object =
-      new scala.internal.quoted.TreeType(tree, QuoteContext.scopeId)
+      new TreeType(tree, QuoteContext.scopeId)
 
     private def interpretLiteral(value: Any)(implicit env: Env): Object =
       value.asInstanceOf[Object]
 
     private def interpretVarargs(args: List[Object])(implicit env: Env): Object =
       args.toSeq
-
-    private def interpretQuoteContext()(implicit env: Env): Object =
-      QuoteContext()
 
     private def interpretedStaticMethodCall(moduleClass: Symbol, fn: Symbol)(implicit env: Env): List[Object] => Object = {
       val (inst, clazz) =
@@ -273,15 +315,15 @@ object Splicer {
           (inst, inst.getClass)
         }
 
-      def getDirectName(tp: Type, name: TermName): TermName = tp.widenDealias match {
-        case tp: AppliedType if defn.isImplicitFunctionType(tp) =>
-          getDirectName(tp.args.last, NameKinds.DirectMethodName(name))
-        case _ => name
-      }
-
-      val name = getDirectName(fn.info.finalResultType, fn.name.asTermName)
+      val name = fn.name.asTermName
       val method = getMethod(clazz, name, paramsSig(fn))
       (args: List[Object]) => stopIfRuntimeException(method.invoke(inst, args: _*), method)
+    }
+
+    private def interpretedStaticFieldAccess(sym: Symbol)(implicit env: Env): Object = {
+      val clazz = loadClass(sym.owner.fullName.toString)
+      val field = clazz.getField(sym.name.toString)
+      field.get(null)
     }
 
     private def interpretModuleAccess(fn: Symbol)(implicit env: Env): Object =
@@ -322,21 +364,19 @@ object Splicer {
       try classLoader.loadClass(name)
       catch {
         case _: ClassNotFoundException =>
-          val msg = s"Could not find class $name in classpath$extraMsg"
+          val msg = s"Could not find class $name in classpath"
           throw new StopInterpretation(msg, pos)
       }
 
-    private def getMethod(clazz: Class[?], name: Name, paramClasses: List[Class[?]]): Method =
+    private def getMethod(clazz: Class[?], name: Name, paramClasses: List[Class[?]]): JLRMethod =
       try clazz.getMethod(name.toString, paramClasses: _*)
       catch {
         case _: NoSuchMethodException =>
-          val msg = em"Could not find method ${clazz.getCanonicalName}.$name with parameters ($paramClasses%, %)$extraMsg"
+          val msg = em"Could not find method ${clazz.getCanonicalName}.$name with parameters ($paramClasses%, %)"
           throw new StopInterpretation(msg, pos)
       }
 
-    private def extraMsg = ". The most common reason for that is that you apply macros in the compilation run that defines them"
-
-    private def stopIfRuntimeException[T](thunk: => T, method: Method): T =
+    private def stopIfRuntimeException[T](thunk: => T, method: JLRMethod): T =
       try thunk
       catch {
         case ex: RuntimeException =>
@@ -348,20 +388,39 @@ object Splicer {
           sw.write("\n")
           throw new StopInterpretation(sw.toString, pos)
         case ex: InvocationTargetException =>
-          val sw = new StringWriter()
-          sw.write("Exception occurred while executing macro expansion.\n")
-          val targetException = ex.getTargetException
-          if (!ctx.settings.Ydebug.value) {
-            val end = targetException.getStackTrace.lastIndexWhere { x =>
-              x.getClassName == method.getDeclaringClass.getCanonicalName && x.getMethodName == method.getName
-            }
-            val shortStackTrace = targetException.getStackTrace.take(end + 1)
-            targetException.setStackTrace(shortStackTrace)
+          ex.getTargetException match {
+            case ex: scala.quoted.StopQuotedContext =>
+              throw ex
+            case MissingClassDefinedInCurrentRun(sym) =>
+              if (ctx.settings.XprintSuspension.value)
+                ctx.echo(i"suspension triggered by a dependency on $sym", pos)
+              ctx.compilationUnit.suspend() // this throws a SuspendException
+            case targetException =>
+              val sw = new StringWriter()
+              sw.write("Exception occurred while executing macro expansion.\n")
+              if (!ctx.settings.Ydebug.value) {
+                val end = targetException.getStackTrace.lastIndexWhere { x =>
+                  x.getClassName == method.getDeclaringClass.getCanonicalName && x.getMethodName == method.getName
+                }
+                val shortStackTrace = targetException.getStackTrace.take(end + 1)
+                targetException.setStackTrace(shortStackTrace)
+              }
+              targetException.printStackTrace(new PrintWriter(sw))
+              sw.write("\n")
+              throw new StopInterpretation(sw.toString, pos)
           }
-          targetException.printStackTrace(new PrintWriter(sw))
-          sw.write("\n")
-          throw new StopInterpretation(sw.toString, pos)
       }
+
+    private object MissingClassDefinedInCurrentRun {
+      def unapply(targetException: NoClassDefFoundError)(using ctx: Context): Option[Symbol] = {
+        val className = targetException.getMessage
+        if (className eq null) None
+        else {
+          val sym = ctx.base.staticRef(className.toTypeName).symbol
+          if (sym.isDefinedInCurrentRun) Some(sym) else None
+        }
+      }
+    }
 
     /** List of classes of the parameters of the signature of `sym` */
     private def paramsSig(sym: Symbol): List[Class[?]] = {
@@ -406,8 +465,8 @@ object Splicer {
         else java.lang.Class.forName(javaSig(param), false, classLoader)
       }
       def getExtraParams(tp: Type): List[Type] = tp.widenDealias match {
-        case tp: AppliedType if defn.isImplicitFunctionType(tp) =>
-          // Call implicit function type direct method
+        case tp: AppliedType if defn.isContextFunctionType(tp) =>
+          // Call context function type direct method
           tp.args.init.map(arg => TypeErasure.erasure(arg)) ::: getExtraParams(tp.args.last)
         case _ => Nil
       }
@@ -434,7 +493,7 @@ object Splicer {
 
     private object Call0 {
       def unapply(arg: Tree)(implicit ctx: Context): Option[(RefTree, List[List[Tree]])] = arg match {
-        case Select(Call0(fn, args), nme.apply) if defn.isImplicitFunctionType(fn.tpe.widenDealias.finalResultType) =>
+        case Select(Call0(fn, args), nme.apply) if defn.isContextFunctionType(fn.tpe.widenDealias.finalResultType) =>
           Some((fn, args))
         case fn: RefTree => Some((fn, Nil))
         case Apply(f @ Call0(fn, args1), args2) =>

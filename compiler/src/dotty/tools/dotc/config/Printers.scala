@@ -28,8 +28,10 @@ object Printers {
   val implicits: Printer = noPrinter
   val implicitsDetailed: Printer = noPrinter
   val lexical: Printer = noPrinter
+  val init: Printer = noPrinter
   val inlining: Printer = noPrinter
   val interactiv: Printer = noPrinter
+  val nullables: Printer = noPrinter
   val overload: Printer = noPrinter
   val patmatch: Printer = noPrinter
   val pickling: Printer = noPrinter

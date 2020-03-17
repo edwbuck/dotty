@@ -215,7 +215,7 @@ object NameKinds {
 
     /** Generate fresh unique term name of this kind with given prefix name */
     def fresh(prefix: TermName = EmptyTermName)(implicit ctx: Context): TermName =
-      ctx.freshNames.newName(prefix, this)
+      ctx.compilationUnit.freshNames.newName(prefix, this)
 
     /** Generate fresh unique type name of this kind with given prefix name */
     def fresh(prefix: TypeName)(implicit ctx: Context): TypeName =
@@ -338,11 +338,6 @@ object NameKinds {
     }
   }
 
-  /** The kind of names that also encode a variance: 0 for contravariance, 1 for covariance. */
-  val VariantName: NumberedNameKind = new NumberedNameKind(VARIANT, "Variant") {
-    def mkString(underlying: TermName, info: ThisInfo) = "-+"(info.num).toString + underlying
-  }
-
   /** Names of the form N_<outer>. Emitted by inliner, replaced by outer path
    *  in ExplicitOuter.
    */
@@ -359,12 +354,11 @@ object NameKinds {
   val InlineAccessorName: PrefixNameKind = new PrefixNameKind(INLINEACCESSOR, "inline$")
 
   val AvoidClashName: SuffixNameKind = new SuffixNameKind(AVOIDCLASH, "$_avoid_name_clash_$")
-  val CacheName = new SuffixNameKind(CACHE, "$_cache")
-  val DirectMethodName: SuffixNameKind = new SuffixNameKind(DIRECT, "$direct") { override def definesNewName = true }
   val FieldName: SuffixNameKind = new SuffixNameKind(FIELD, "$$local") {
       override def mkString(underlying: TermName, info: ThisInfo) = underlying.toString
   }
   val ExtMethName: SuffixNameKind = new SuffixNameKind(EXTMETH, "$extension")
+  val ParamAccessorName: SuffixNameKind = new SuffixNameKind(PARAMACC, "$accessor")
   val ModuleClassName: SuffixNameKind = new SuffixNameKind(OBJECTCLASS, "$", optInfoString = "ModuleClass")
   val ImplMethName: SuffixNameKind = new SuffixNameKind(IMPLMETH, "$")
   val AdaptedClosureName: SuffixNameKind = new SuffixNameKind(ADAPTEDCLOSURE, "$adapted") { override def definesNewName = true }

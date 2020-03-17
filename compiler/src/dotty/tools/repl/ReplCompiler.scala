@@ -41,7 +41,7 @@ class ReplCompiler extends Compiler {
   def newRun(initCtx: Context, state: State): Run = new Run(this, initCtx) {
 
     /** Import previous runs and user defined imports */
-    override protected[this] def rootContext(implicit ctx: Context): Context = {
+    override protected def rootContext(implicit ctx: Context): Context = {
       def importContext(imp: tpd.Import)(implicit ctx: Context) =
         ctx.importContext(imp, imp.symbol)
 
@@ -67,7 +67,7 @@ class ReplCompiler extends Compiler {
     }
   }
 
-  private[this] val objectNames = mutable.Map.empty[Int, TermName]
+  private val objectNames = mutable.Map.empty[Int, TermName]
 
   private case class Definitions(stats: List[untpd.Tree], state: State)
 
@@ -276,7 +276,7 @@ class ReplCompiler extends Compiler {
     val src = SourceFile.virtual("<typecheck>", expr)
     implicit val ctx: Context = state.context.fresh
       .setReporter(newStoreReporter)
-      .setSetting(state.context.settings.YstopAfter, List("frontend"))
+      .setSetting(state.context.settings.YstopAfter, List("typer"))
 
     wrapped(expr, src, state).flatMap { pkg =>
       val unit = CompilationUnit(src)

@@ -2,7 +2,16 @@
 import scala.quoted._
 
 object Macros {
-  def impl(foo: Any)(given QuoteContext): Expr[String] = foo.getClass.getCanonicalName.toExpr
+  def impl(expr: Expr[Any]) (using QuoteContext): Expr[String] =
+    val obj = expr match {
+      case '{ None } => None
+      case '{ scala.collection.immutable.Nil } => Nil
+      case '{ Bar } => Bar
+      case '{ Bar.Baz } => Bar.Baz
+      case '{ foo.Bar } => foo.Bar
+      case '{ foo.Bar.Baz } => foo.Bar.Baz
+    }
+    Expr(obj.getClass.getCanonicalName)
 }
 
 case object Bar {

@@ -20,12 +20,12 @@ The general form of a (monomorphic) opaque type alias is
 ```scala
 opaque type T >: L <: U = R
 ```
-where the lower bound `L` and the upper bound `U` may be missing, in which case they are assumed to be `scala.Nothing` and `scala.Any`, respectively. If bounds are given, it is checked that the right hand side `R` conforms to them, i.e. `L <: R` and `R <: U`.
+where the lower bound `L` and the upper bound `U` may be missing, in which case they are assumed to be `scala.Nothing` and `scala.Any`, respectively. If bounds are given, it is checked that the right hand side `R` conforms to them, i.e. `L <: R` and `R <: U`. F-bounds are not supported for opaque types: `T` is not allowed to appear in `L` or `U`.
 
 Inside the scope of the alias definition, the alias is transparent: `T` is treated
 as a normal alias of `R`. Outside its scope, the alias is treated as the abstract type
 ```scala
-type T >: L <: U`
+type T >: L <: U
 ```
 A special case arises if the opaque type is defined in an object. Example:
 ```
@@ -45,6 +45,35 @@ object o {
 }
 def id(x: o.T): o.T = x
 ```
+
+### Toplevel Opaque Types
+
+An opaque type on the toplevel is transparent in all other toplevel definitions in the sourcefile where it appears, but is opaque in nested
+objects and classes and in all other source files. Example:
+```scala
+// in test1.scala
+opaque type A = String
+val x: A = "abc"
+
+object obj {
+  val y: A = "abc"  // error: found: "abc", required: A
+}
+
+// in test2.scala
+def z: String = x   // error: found: A, required: String
+```
+This behavior becomes clear if one recalls that toplevel definitions are placed in their own synthetic object. For instance, the code in `test1.scala` would expand to
+```scala
+object test1$package {
+  opaque type A = String
+  val x: A = "abc"
+}
+object obj {
+  val y: A = "abc"  // error: cannot assign "abc" to opaque type A
+}
+```
+The opaque type `A` is transparent in its scope, which includes the definition of `x`, but not the definitions of `obj` and `y`.
+
 
 ### Relationship to SIP 35
 

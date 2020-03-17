@@ -2,7 +2,7 @@
 name: "\U0001F4A5 Crash report"
 about: Report a Dotty Compiler compiler crash
 title: ''
-labels: itype:bug
+labels: itype:bug, itype:crash
 assignees: ''
 
 ---
@@ -13,11 +13,10 @@ assignees: ''
 println("hello, world")
 ```
 
-
+## Crash output (click arrow to expand)
 <details>
-<summary>Stack trace</summary>
 
 ```scala
-# TODO add stack trace here
+// TODO add output here
 ```
 </details>

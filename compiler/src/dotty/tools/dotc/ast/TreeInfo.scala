@@ -88,6 +88,12 @@ trait TreeInfo[T >: Untyped <: Type] { self: Trees.Instance[T] =>
   /** If this is a block, its expression part */
   def stripBlock(tree: Tree): Tree = unsplice(tree) match {
     case Block(_, expr) => stripBlock(expr)
+    case Inlined(_, _, expr) => stripBlock(expr)
+    case _ => tree
+  }
+
+  def stripInlined(tree: Tree): Tree = unsplice(tree) match {
+    case Inlined(_, _, expr) => stripInlined(expr)
     case _ => tree
   }
 
@@ -274,23 +280,6 @@ trait UntypedTreeInfo extends TreeInfo[Untyped] { self: Trees.Instance[Untyped] 
     case _ => tree
   }
 
-  /** True iff definition is a val or def with no right-hand-side, or it
-   *  is an abstract typoe declaration
-   */
-  def lacksDefinition(mdef: MemberDef)(implicit ctx: Context): Boolean = mdef match {
-    case mdef: ValOrDefDef =>
-      mdef.unforcedRhs == EmptyTree && !mdef.name.isConstructorName && !mdef.mods.isOneOf(TermParamOrAccessor)
-    case mdef: TypeDef =>
-      def isBounds(rhs: Tree): Boolean = rhs match {
-        case _: TypeBoundsTree => true
-        case _: MatchTypeTree => true // Typedefs with Match rhs classify as abstract
-        case LambdaTypeTree(_, body) => isBounds(body)
-        case _ => false
-      }
-      mdef.rhs.isEmpty || isBounds(mdef.rhs)
-    case _ => false
-  }
-
   def functionWithUnknownParamType(tree: Tree): Option[Tree] = tree match {
     case Function(args, _) =>
       if (args.exists {
@@ -309,7 +298,7 @@ trait UntypedTreeInfo extends TreeInfo[Untyped] { self: Trees.Instance[Untyped] 
   def isFunctionWithUnknownParamType(tree: Tree): Boolean =
     functionWithUnknownParamType(tree).isDefined
 
-  /** Is `tree` an implicit function or closure, possibly nested in a block? */
+  /** Is `tree` an context function or closure, possibly nested in a block? */
   def isContextualClosure(tree: Tree)(implicit ctx: Context): Boolean = unsplice(tree) match {
     case tree: FunctionWithMods => tree.mods.is(Given)
     case Function((param: untpd.ValDef) :: _, _) => param.mods.is(Given)
@@ -318,7 +307,7 @@ trait UntypedTreeInfo extends TreeInfo[Untyped] { self: Trees.Instance[Untyped] 
     case Block(DefDef(nme.ANON_FUN, _, params :: _, _, _) :: Nil, cl: Closure) =>
       params match {
         case param :: _ => param.mods.is(Given)
-        case Nil => cl.tpt.eq(untpd.ContextualEmptyTree) || defn.isImplicitFunctionType(cl.tpt.typeOpt)
+        case Nil => cl.tpt.eq(untpd.ContextualEmptyTree) || defn.isContextFunctionType(cl.tpt.typeOpt)
       }
     case _ => false
   }
@@ -344,6 +333,18 @@ trait UntypedTreeInfo extends TreeInfo[Untyped] { self: Trees.Instance[Untyped] 
    */
   def bodyKind(body: List[Tree])(implicit ctx: Context): FlagSet =
     body.foldLeft(NoInitsInterface)((fs, stat) => fs & defKind(stat))
+
+  /** Info of a variable in a pattern: The named tree and its type */
+  type VarInfo = (NameTree, Tree)
+
+  /** An extractor for trees of the form `id` or `id: T` */
+  object IdPattern {
+    def unapply(tree: Tree)(implicit ctx: Context): Option[VarInfo] = tree match {
+      case id: Ident if id.name != nme.WILDCARD => Some(id, TypeTree())
+      case Typed(id: Ident, tpt) => Some((id, tpt))
+      case _ => None
+    }
+  }
 
   // todo: fill with other methods from TreeInfo that only apply to untpd.Tree's
 }
@@ -396,7 +397,9 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
       if (fn.symbol.is(Erased) || fn.symbol == defn.InternalQuoted_typeQuote) Pure else exprPurity(fn)
     case Apply(fn, args) =>
       def isKnownPureOp(sym: Symbol) =
-        sym.owner.isPrimitiveValueClass || sym.owner == defn.StringClass
+        sym.owner.isPrimitiveValueClass
+        || sym.owner == defn.StringClass
+        || defn.pureMethods.contains(sym)
       if (tree.tpe.isInstanceOf[ConstantType] && isKnownPureOp(tree.symbol) // A constant expression with pure arguments is pure.
           || (fn.symbol.isStableMember && !fn.symbol.is(Lazy))
           || fn.symbol.isPrimaryConstructor && fn.symbol.owner.isNoInitsClass) // TODO: include in isStable?
@@ -439,7 +442,9 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
 
   /** The purity level of this reference.
    *  @return
-   *    PurePath        if reference is (nonlazy and stable) or to a parameterized function
+   *    PurePath        if reference is (nonlazy and stable)
+   *                    or to a parameterized function
+   *                    or its type is a constant type
    *    IdempotentPath  if reference is lazy and stable
    *    Impure          otherwise
    *  @DarkDimius: need to make sure that lazy accessor methods have Lazy and Stable
@@ -449,6 +454,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
     val sym = tree.symbol
     if (!tree.hasType) Impure
     else if (!tree.tpe.widen.isParameterless || sym.isEffectivelyErased) PurePath
+    else if tree.tpe.isInstanceOf[ConstantType] then PurePath
     else if (!sym.isStableMember) Impure
     else if (sym.is(Module))
       if (sym.moduleClass.isNoInitsClass) PurePath else IdempotentPath
@@ -624,7 +630,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
   /** An extractor for def of a closure contained the block of the closure. */
   object closureDef {
     def unapply(tree: Tree)(implicit ctx: Context): Option[DefDef] = tree match {
-      case Block((meth @ DefDef(nme.ANON_FUN, _, _, _, _)) :: Nil, closure: Closure) =>
+      case Block((meth : DefDef) :: Nil, closure: Closure) if meth.symbol == closure.meth.symbol =>
         Some(meth)
       case Block(Nil, expr) =>
         unapply(expr)
@@ -858,6 +864,21 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
       case _ => None
     }
   }
+
+  /** Extractor for not-null assertions.
+   *  A not-null assertion for reference `x` has the form `x.$asInstanceOf$[x.type & T]`.
+   */
+  object AssertNotNull :
+    def apply(tree: tpd.Tree, tpnn: Type)(using Context): tpd.Tree =
+      tree.select(defn.Any_typeCast).appliedToType(AndType(tree.tpe, tpnn))
+
+    def unapply(tree: tpd.TypeApply)(using Context): Option[tpd.Tree] = tree match
+      case TypeApply(Select(qual: RefTree, nme.asInstanceOfPM), arg :: Nil) =>
+        arg.tpe match
+          case AndType(ref, _) if qual.tpe eq ref => Some(qual)
+          case _ => None
+      case _ => None
+  end AssertNotNull
 }
 
 object TreeInfo {

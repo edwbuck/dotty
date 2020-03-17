@@ -17,6 +17,7 @@ import DenotTransformers._
 import NameOps._
 import NameKinds.OuterSelectName
 import StdNames._
+import NullOpsDecorator._
 
 object FirstTransform {
   val name: String = "firstTransform"
@@ -50,10 +51,25 @@ class FirstTransform extends MiniPhase with InfoTransformer { thisPhase =>
   override def checkPostCondition(tree: Tree)(implicit ctx: Context): Unit =
     tree match {
       case Select(qual, name) if !name.is(OuterSelectName) && tree.symbol.exists =>
+        val qualTpe = if (ctx.explicitNulls) {
+          // `UncheckedNull` is already special-cased in the Typer, but needs to be handled here as well.
+          // We need `stripAllUncheckedNull` and not `stripUncheckedNull` because of the following case:
+          //
+          //   val s: (String|UncheckedNull)&(String|UncheckedNull) = "hello"
+          //   val l = s.length
+          //
+          // The invariant below is that the type of `s`, which isn't a top-level UncheckedNull union,
+          // must derive from the type of the owner of `length`, which is `String`. Because we don't
+          // know which `UncheckedNull`s were used to find the `length` member, we conservatively remove
+          // all of them.
+          qual.tpe.stripAllUncheckedNull
+        } else {
+          qual.tpe
+        }
         assert(
-          qual.tpe.derivesFrom(tree.symbol.owner) ||
-            tree.symbol.is(JavaStatic) && qual.tpe.derivesFrom(tree.symbol.enclosingClass),
-          i"non member selection of ${tree.symbol.showLocated} from ${qual.tpe} in $tree")
+          qualTpe.derivesFrom(tree.symbol.owner) ||
+            tree.symbol.is(JavaStatic) && qualTpe.derivesFrom(tree.symbol.enclosingClass),
+          i"non member selection of ${tree.symbol.showLocated} from ${qualTpe} in $tree")
       case _: TypeTree =>
       case _: Import | _: NamedArg | _: TypTree =>
         assert(false, i"illegal tree: $tree")
@@ -142,7 +158,16 @@ class FirstTransform extends MiniPhase with InfoTransformer { thisPhase =>
   }
 
   override def transformIdent(tree: Ident)(implicit ctx: Context): Tree =
-    if (tree.isType) toTypeTree(tree) else constToLiteral(tree)
+    if (tree.isType) {
+      toTypeTree(tree)
+    } else if (tree.name != nme.WILDCARD) {
+      // We constant-fold all idents except wildcards.
+      // AFAIK, constant-foldable wildcard idents can only occur in patterns, for instance as `case _: "a"`.
+      // Constant-folding that would result in `case "a": "a"`, which changes the meaning of the pattern.
+      // Note that we _do_ want to constant-fold idents in patterns that _aren't_ wildcards -
+      // for example, @switch annotation needs to see inlined literals and not indirect references.
+      constToLiteral(tree)
+    } else tree
 
   override def transformSelect(tree: Select)(implicit ctx: Context): Tree =
     if (tree.isType) toTypeTree(tree) else constToLiteral(tree)
@@ -154,14 +179,17 @@ class FirstTransform extends MiniPhase with InfoTransformer { thisPhase =>
     constToLiteral(foldCondition(tree))
 
   override def transformTyped(tree: Typed)(implicit ctx: Context): Tree =
-    constToLiteral(tree)
+    // Singleton type cases (such as `case _: "a"`) are constant-foldable.
+    // We avoid constant-folding those as doing so would change the meaning of the pattern (see transformIdent).
+    if (!ctx.mode.is(Mode.Pattern)) constToLiteral(tree) else tree
 
   override def transformBlock(tree: Block)(implicit ctx: Context): Tree =
     constToLiteral(tree)
 
   override def transformIf(tree: If)(implicit ctx: Context): Tree =
-    tree.cond match {
-      case Literal(Constant(c: Boolean)) => if (c) tree.thenp else tree.elsep
+    tree.cond.tpe match {
+      case ConstantType(Constant(c: Boolean)) if isPureExpr(tree.cond) =>
+        if (c) tree.thenp else tree.elsep
       case _ => tree
     }
 

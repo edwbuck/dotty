@@ -17,14 +17,15 @@ import dotc.core.StdNames.str
  *  println(e.eval("42"))
  */
 class ScriptEngine extends AbstractScriptEngine {
-  private[this] val driver = new ReplDriver(
+  private val driver = new ReplDriver(
     Array(
       "-classpath", "", // Avoid the default "."
       "-usejavacp",
-      "-color:never"
+      "-color:never",
+      "-Xrepl-disable-display"
     ), Console.out, None)
-  private[this] val rendering = new Rendering
-  private[this] var state: State = driver.initialState
+  private val rendering = new Rendering
+  private var state: State = driver.initialState
 
   def getFactory: ScriptEngineFactory = new ScriptEngine.Factory
 

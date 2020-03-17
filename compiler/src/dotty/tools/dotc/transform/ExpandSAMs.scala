@@ -36,7 +36,7 @@ class ExpandSAMs extends MiniPhase {
       tpt.tpe match {
         case NoType =>
           tree // it's a plain function
-        case tpe if defn.isImplicitFunctionType(tpe) =>
+        case tpe if defn.isContextFunctionType(tpe) =>
           tree
         case tpe @ SAMType(_) if tpe.isRef(defn.PartialFunctionClass) =>
           val tpe1 = checkRefinements(tpe, fn)
@@ -46,7 +46,7 @@ class ExpandSAMs extends MiniPhase {
           tree
         case tpe =>
           val tpe1 = checkRefinements(tpe, fn)
-          val Seq(samDenot) = tpe1.abstractTermMembers.filter(!_.symbol.isSuperAccessor)
+          val Seq(samDenot) = tpe1.possibleSamMethods
           cpy.Block(tree)(stats,
               AnonClass(tpe1 :: Nil, fn.symbol.asTerm :: Nil, samDenot.symbol.asTerm.name :: Nil))
       }

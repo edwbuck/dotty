@@ -19,7 +19,6 @@ import dotty.tools.dotc.util.Spans._
 import dotty.tools.dotc.util.{Property, SourcePosition}
 import dotty.tools.dotc.transform.SymUtils._
 import dotty.tools.dotc.typer.Implicits.SearchFailureType
-import dotty.tools.dotc.typer.Inliner
 
 import scala.collection.mutable
 import scala.annotation.constructorOnly
@@ -36,10 +35,10 @@ abstract class TreeMapWithStages(@constructorOnly ictx: Context) extends TreeMap
   import TreeMapWithStages._
 
   /** A map from locally defined symbols to their definition quotation level */
-  private[this] val levelOfMap: mutable.HashMap[Symbol, Int] = ictx.property(LevelOfKey).get
+  private val levelOfMap: mutable.HashMap[Symbol, Int] = ictx.property(LevelOfKey).get
 
   /** A stack of entered symbols, to be unwound after scope exit */
-  private[this] var enteredSyms: List[Symbol] = Nil
+  private var enteredSyms: List[Symbol] = Nil
 
   /** The quotation level of the definition of the locally defined symbol */
   protected def levelOf(sym: Symbol): Option[Int] = levelOfMap.get(sym)
@@ -48,13 +47,15 @@ abstract class TreeMapWithStages(@constructorOnly ictx: Context) extends TreeMap
   protected def localSymbols: List[Symbol] = enteredSyms
 
   /** Enter staging level of symbol defined by `tree`, if applicable. */
+  private def markSymbol(sym: Symbol)(implicit ctx: Context): Unit =
+    if ((sym.isClass || sym.maybeOwner.isTerm) && !levelOfMap.contains(sym)) {
+      levelOfMap(sym) = level
+      enteredSyms = sym :: enteredSyms
+  }
+
+  /** Enter staging level of symbol defined by `tree`, if applicable. */
   private def markDef(tree: Tree)(implicit ctx: Context): Unit = tree match {
-    case tree: DefTree =>
-      val sym = tree.symbol
-      if ((sym.isClass || sym.maybeOwner.isTerm) && !levelOfMap.contains(sym)) {
-        levelOfMap(sym) = level
-        enteredSyms = sym :: enteredSyms
-      }
+    case tree: DefTree => markSymbol(tree.symbol)
     case _ =>
   }
 
@@ -89,7 +90,10 @@ abstract class TreeMapWithStages(@constructorOnly ictx: Context) extends TreeMap
 
         case Quoted(quotedTree) =>
           dropEmptyBlocks(quotedTree) match {
-            case Spliced(t) => transform(t) // '{ $x } --> x
+            case Spliced(t) =>
+              // '{ $x } --> x
+              // and adapt the refinment of `QuoteContext { type tasty: ... } ?=> Expr[T]`
+              transform(t).asInstance(tree.tpe)
             case _ => transformQuotation(quotedTree, tree)
           }
 
@@ -106,16 +110,7 @@ abstract class TreeMapWithStages(@constructorOnly ictx: Context) extends TreeMap
 
         case CaseDef(pat, guard, body) =>
           val last = enteredSyms
-          // mark all bindings
-          new TreeTraverser {
-            def traverse(tree: Tree)(implicit ctx: Context): Unit = tree match {
-              case Quoted(t) => traverse(t)(quoteContext)
-              case Splice(t) => traverse(t)(spliceContext)
-              case _ =>
-                markDef(tree)
-                traverseChildren(tree)
-            }
-          }.traverse(pat)
+          tpd.patVars(pat).foreach(markSymbol)
           mapOverTree(last)
 
         case _: Import =>

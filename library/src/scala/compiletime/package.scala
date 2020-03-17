@@ -52,5 +52,30 @@ package object compiletime {
    */
   inline def summonFrom[T](f: Nothing => T) <: T = ???
 
-  type S[X <: Int] <: Int
+
+  /** Summon a given value of type `T`. Usually, the argument is not passed explicitly.
+   *  The summoning is delayed until the call has been fully inlined.
+   *
+   *  @tparam T the type of the value to be summoned
+   *  @return the given value typed as the provided type parameter
+   */
+  inline def summonInline[T] <: T = summonFrom {
+    case t: T => t
+  }
+
+
+  /** Succesor of a natural number where zero is the type 0 and successors are reduced as if the definition was
+   *
+   *      type S[N <: Int] <: Int = N match {
+   *        case 0 => 1
+   *        case 1 => 2
+   *        case 2 => 3
+   *        ...
+   *        case 2147483646 => 2147483647
+   *      }
+   */
+  type S[N <: Int] <: Int
+
+  /** Assertion that an argument is by-name. Used for nullability checking. */
+  def byName[T](x: => T): T = x
 }

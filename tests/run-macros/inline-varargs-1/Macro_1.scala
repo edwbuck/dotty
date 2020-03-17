@@ -1,7 +1,7 @@
 
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift
 
 object Macros {
-  def sum(nums: Int*)(given QuoteContext): Expr[Int] = nums.sum
+  def sum(nums: Expr[Int]*) (using QuoteContext): Expr[Int] = nums.map(_.unliftOrError).sum
 }

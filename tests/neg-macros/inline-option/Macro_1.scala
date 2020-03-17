@@ -2,8 +2,8 @@
 import scala.quoted._
 
 object Macro {
-  def impl(opt: Option[Int])(given QuoteContext): Expr[Int] = opt match {
-    case Some(i) => i.toExpr
+  def impl(opt: Expr[Option[Int]]) (using QuoteContext): Expr[Int] = opt.unliftOrError match {
+    case Some(i) => Expr(i)
     case None => '{-1}
   }
 }
